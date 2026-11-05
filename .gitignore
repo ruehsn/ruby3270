@@ -1,0 +1,9 @@
+.ruby3270.yml
+Gemfile.lock
+.bundle/
+vendor/bundle/
+coverage/
+*.gem
+*.log
+Thumbs.db
+.DS_Store

@@ -1,0 +1,14 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Opens the emulator window.
+#   ruby bin/tn3270                 # then Session > Connect...
+#   ruby bin/tn3270 myhost:3270     # connect right away
+#   ruby bin/tn3270 --session "Work mainframe"   # connect to a saved session (desktop shortcuts use this)
+$LOAD_PATH.unshift File.expand_path("../lib", __dir__)
+require "tn3270"
+require "tn3270/gui/app"
+
+args = ARGV.dup
+session = (i = args.index("--session")) && args.slice!(i, 2)[1]
+Tn3270::Gui::App.new(host: args.first, session: session).launch
