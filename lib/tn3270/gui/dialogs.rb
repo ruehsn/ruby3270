@@ -1,28 +1,33 @@
 # frozen_string_literal: true
 
-require "glimmer-dsl-libui"
+require_relative "ui"
 require_relative "config"
 require_relative "keymap"
+require_relative "screen_painter"
 require_relative "shortcut"
+require_relative "fonts"
 require_relative "win32"
 
 module Tn3270
   module Gui
-    # Small helper shared by the dialogs. Glimmer's window#show starts a new
-    # event loop the first time it is called, which is right for the main
-    # window but not for a dialog opened from a menu.
+    # Small helpers shared by the dialogs.
     module DialogSupport
       def show_window(win)
         Win32.set_icon(win)
-        ::LibUI.control_show(win.libui)
+        UI.control_show(win)
         win
+      end
+
+      # Closes a window from inside one of its own event handlers.
+      def close_window(win)
+        UI.queue_main { UI.control_destroy(win) }
       end
     end
 
-    # Session > Connections...: saved connections (host, port, TLS, LU,
-    # screen size) plus the path to the s3270 engine.
+    # Session > Connections...: saved connections (host, port, TLS and
+    # certificate checking, LU, screen size, startup script) plus the path to
+    # the s3270 engine.
     class ConnectionsDialog
-      include Glimmer
       include DialogSupport
 
       SIZE_LABELS = Config::SIZES.map(&:first) + ["Custom"]
@@ -32,88 +37,55 @@ module Tn3270
         @config = config
         @on_connect = on_connect
         @on_save = on_save
-        @list = config.connections.map(&:dup)
+        @list = config.connections.map { |c| Config::DEFAULT_CONNECTION.merge(c) }
         @list = [Config::DEFAULT_CONNECTION.dup] if @list.empty?
         @index = 0
       end
 
       def show
-        d = self
-        @win = window("Connections", 520, 460, false) {
-          margined true
-          vertical_box {
-            padded true
-            horizontal_box {
-              stretchy false
-              @combo = combobox {
-                items d.send(:names)
-                selected 0
-                on_selected { |c| d.send(:pick, c.selected) }
-              }
-              button("New") {
-                stretchy false
-                on_clicked { d.send(:add) }
-              }
-              button("Delete") {
-                stretchy false
-                on_clicked { d.send(:delete) }
-              }
-            }
-            group("Connection") {
-              stretchy false
-              form {
-                padded true
-                @name = entry { label "Name" }
-                @host = entry { label "Host" }
-                @port = spinbox(1, 65_535) { label "Port" }
-                @tls = checkbox("Use TLS") { label "Security" }
-                @lu = entry { label "LU name (optional)" }
-                @size = combobox {
-                  label "Screen size"
-                  items SIZE_LABELS
-                  on_selected { |c| d.send(:size_picked, c.selected) }
-                }
-                @rows = spinbox(24, 255) { label "Rows" }
-                @cols = spinbox(80, 255) { label "Columns" }
-              }
-            }
-            group("Emulator engine") {
-              stretchy false
-              vertical_box {
-                label("Path to ws3270.exe / s3270. Leave blank to use TN3270_ENGINE or PATH.\n" \
-                      "Takes effect after restarting the emulator.") { stretchy false }
-                horizontal_box {
-                  stretchy false
-                  @engine = entry { text d.send(:config)["engine"].to_s }
-                  button("Browse...") {
-                    stretchy false
-                    on_clicked do
-                      path = open_file
-                      d.send(:engine_entry).text = path.to_s unless path.to_s.empty?
-                    end
-                  }
-                }
-              }
-            }
-            @error = label("") { stretchy false }
-            horizontal_box {
-              stretchy false
-              label("")
-              button("Save") {
-                stretchy false
-                on_clicked { d.send(:save) }
-              }
-              button("Connect") {
-                stretchy false
-                on_clicked { d.send(:connect) }
-              }
-              button("Close") {
-                stretchy false
-                on_clicked { d.send(:close) }
-              }
-            }
-          }
-        }
+        @win = Ui.window("Connections", 560, 540)
+        UI.window_on_closing(@win) { 1 }
+        main = Ui.vbox
+
+        top = Ui.add(main, Ui.hbox)
+        @combo = Ui.add(top, Ui.combobox(names) { |i| pick(i) }, stretchy: true)
+        Ui.add(top, Ui.button("New") { add })
+        Ui.add(top, Ui.button("Delete") { delete })
+
+        form = Ui.form
+        @name = Ui.form_row(form, "Name", Ui.entry)
+        @host = Ui.form_row(form, "Host", Ui.entry)
+        @port = Ui.form_row(form, "Port", Ui.spinbox(1, 65_535, 23))
+        @tls = Ui.form_row(form, "Security", Ui.checkbox("Use TLS") { update_verify })
+        @verify = Ui.form_row(form, "", Ui.checkbox("Verify the host's certificate (leave off for self-signed certificates)"))
+        @lu = Ui.form_row(form, "LU name (optional)", Ui.entry)
+        @size = Ui.form_row(form, "Screen size", Ui.combobox(SIZE_LABELS) { |i| size_picked(i) })
+        @rows = Ui.form_row(form, "Rows", Ui.spinbox(24, 255, 24))
+        @cols = Ui.form_row(form, "Columns", Ui.spinbox(80, 255, 80))
+        script_row = Ui.hbox
+        @script = Ui.add(script_row, Ui.entry, stretchy: true)
+        Ui.add(script_row, Ui.button("Browse...") { browse_script })
+        Ui.add(script_row, Ui.button("Clear") { UI.entry_set_text(@script, "") })
+        Ui.form_row(form, "Startup script", script_row)
+        Ui.form_row(form, "", Ui.label("A Ruby file run each time this connection comes up, e.g. to log on.\n" \
+                                       "See examples/startup_script.rb."))
+        Ui.add(main, Ui.group("Connection", form))
+
+        engine = Ui.vbox
+        Ui.add(engine, Ui.label("Path to ws3270.exe / s3270. Leave blank to find it automatically.\n" \
+                                "Takes effect after restarting the emulator."))
+        erow = Ui.add(engine, Ui.hbox)
+        @engine = Ui.add(erow, Ui.entry(@config["engine"]), stretchy: true)
+        Ui.add(erow, Ui.button("Browse...") { browse_engine })
+        Ui.add(main, Ui.group("Emulator engine", engine))
+
+        @error = Ui.add(main, Ui.label(""))
+        buttons = Ui.add(main, Ui.hbox)
+        Ui.add(buttons, Ui.label(""), stretchy: true)
+        Ui.add(buttons, Ui.button("Save") { save })
+        Ui.add(buttons, Ui.button("Connect") { connect })
+        Ui.add(buttons, Ui.button("Close") { close_window(@win) })
+        UI.window_set_child(@win, main)
         load_form
         show_window(@win)
       end
@@ -122,8 +94,19 @@ module Tn3270
 
       attr_reader :config
 
-      def engine_entry = @engine
-      def names = @list.map { |c| c["name"].to_s.empty? ? Config.connect_string(c) : c["name"] }
+      def names = @list.map { |c| c["name"].to_s.empty? ? Config.display_string(c) : c["name"] }
+
+      def update_verify = Ui.enable(@verify, Ui.checked?(@tls))
+
+      def browse_script
+        path = Ui.open_file(@win)
+        UI.entry_set_text(@script, path) if path
+      end
+
+      def browse_engine
+        path = Ui.open_file(@win)
+        UI.entry_set_text(@engine, path) if path
+      end
 
       def pick(index)
         return if index.negative? || index == @index
@@ -150,44 +133,45 @@ module Tn3270
         persist
       end
 
-      def refresh_combo
-        @combo.items = names
-        @combo.selected = @index
-      end
+      def refresh_combo = Ui.set_items(@combo, names, @index)
 
       def load_form
         c = @list[@index]
-        @name.text = c["name"].to_s
-        @host.text = c["host"].to_s
-        @port.value = c["port"].to_i
-        @tls.checked = !!c["tls"]
-        @lu.text = c["lu"].to_s
+        UI.entry_set_text(@name, c["name"].to_s)
+        UI.entry_set_text(@host, c["host"].to_s)
+        UI.spinbox_set_value(@port, c["port"].to_i)
+        UI.checkbox_set_checked(@tls, Ui.flag(c["tls"]))
+        UI.checkbox_set_checked(@verify, Ui.flag(c["verify_cert"]))
+        update_verify
+        UI.entry_set_text(@lu, c["lu"].to_s)
+        UI.entry_set_text(@script, c["script"].to_s)
         rows = c["rows"].to_i
         cols = c["cols"].to_i
-        @rows.value = rows
-        @cols.value = cols
+        UI.spinbox_set_value(@rows, rows)
+        UI.spinbox_set_value(@cols, cols)
         idx = Config::SIZES.index { |_, r, k| r == rows && k == cols } || SIZE_LABELS.size - 1
-        @size.selected = idx
+        UI.combobox_set_selected(@size, idx)
         size_picked(idx)
-        @error.text = ""
+        UI.label_set_text(@error, "")
       end
 
       def size_picked(index)
         custom = index == SIZE_LABELS.size - 1
-        @rows.enabled = custom
-        @cols.enabled = custom
+        Ui.enable(@rows, custom)
+        Ui.enable(@cols, custom)
         return if custom || index.negative?
 
         _, rows, cols = Config::SIZES[index]
-        @rows.value = rows
-        @cols.value = cols
+        UI.spinbox_set_value(@rows, rows)
+        UI.spinbox_set_value(@cols, cols)
       end
 
       def read_form
         @list[@index] = {
-          "name" => @name.text.to_s.strip, "host" => @host.text.to_s.strip, "port" => @port.value.to_i,
-          "tls" => @tls.checked, "lu" => @lu.text.to_s.strip,
-          "rows" => @rows.value.to_i, "cols" => @cols.value.to_i
+          "name" => Ui.entry_text(@name).strip, "host" => Ui.entry_text(@host).strip,
+          "port" => UI.spinbox_value(@port), "tls" => Ui.checked?(@tls), "verify_cert" => Ui.checked?(@verify),
+          "lu" => Ui.entry_text(@lu).strip, "rows" => UI.spinbox_value(@rows), "cols" => UI.spinbox_value(@cols),
+          "script" => Ui.entry_text(@script).strip
         }
       end
 
@@ -197,6 +181,7 @@ module Tn3270
         return "Enter a host name or address." if c["host"].empty?
         return "Host should not include a port; use the Port box." if c["host"].include?(":")
         return "Screen too large: rows x columns must be at most #{MAX_CELLS}." if c["rows"] * c["cols"] > MAX_CELLS
+        return "Startup script not found: #{c['script']}" unless c["script"].empty? || File.file?(c["script"])
 
         nil
       end
@@ -206,7 +191,7 @@ module Tn3270
       def persist(shortcut: nil)
         before = config.connections
         config["connections"] = @list
-        engine = @engine.text.to_s.strip
+        engine = Ui.entry_text(@engine).strip
         config["engine"] = engine.empty? ? nil : engine
         config.save
         @on_save&.call
@@ -225,12 +210,12 @@ module Tn3270
       def save
         read_form
         if (msg = problem)
-          @error.text = msg
+          UI.label_set_text(@error, msg)
           return false
         end
         refresh_combo
         link = persist(shortcut: @list[@index])
-        @error.text = link ? "Saved. Desktop shortcut: #{File.basename(link)}" : "Saved."
+        UI.label_set_text(@error, link ? "Saved. Desktop shortcut: #{File.basename(link)}" : "Saved.")
         true
       end
 
@@ -238,16 +223,17 @@ module Tn3270
         return unless save
 
         @on_connect.call(@list[@index])
-        close
+        close_window(@win)
       end
-
-      def close = @win.destroy
     end
 
     # Keys > Keyboard Mapping...: bind any key combination to any action.
     class KeysDialog
-      include Glimmer
       include DialogSupport
+
+      PAD_BG = [0xF4, 0xF7, 0xFC].freeze
+      PAD_LINE = [0x4C, 0x8D, 0xFF].freeze
+      PAD_TEXT = [0x33, 0x3D, 0x4D].freeze
 
       def initialize(config, on_change:)
         @config = config
@@ -255,108 +241,96 @@ module Tn3270
         # Editing and other keys first; PA and PF keys at the bottom.
         aid, other = Keymap::ACTIONS.to_a.partition { |action, _| action.match?(/\Ap[af]\d+\z/) }
         @actions = other + aid.sort_by { |action, _| [action.start_with?("pf") ? 1 : 0, action[2..].to_i] }
+        @painter = Painter.new
       end
 
       def show
-        d = self
-        @rows = @actions.map { |action, label| [label, keys_text(action)] }
-        @win = window("Keyboard Mapping", 560, 600, false) {
-          margined true
-          vertical_box {
-            label("Double-click an action to change its keys.") { stretchy false }
-            @table = table {
-              text_column("Action")
-              text_column("Keys")
-              cell_rows d.send(:table_rows)
-              on_row_double_clicked { |_table, row| d.send(:edit, row) }
-            }
-            @status = label("") { stretchy false }
-            horizontal_box {
-              stretchy false
-              button("Edit...") { on_clicked { d.send(:edit, d.send(:selected_index)) } }
-              button("Remove Keys") { on_clicked { d.send(:remove) } }
-              button("Reset All") { on_clicked { d.send(:reset_all) } }
-              button("Close") { on_clicked { d.send(:close) } }
-            }
-          }
-        }
+        @win = Ui.window("Keyboard Mapping", 560, 600)
+        UI.window_on_closing(@win) do
+          close_editor
+          1
+        end
+        main = Ui.vbox
+        Ui.add(main, Ui.label("Double-click an action to change its keys."))
+        @table = Ui::Table.new(%w[Action Keys], table_rows) { |row| edit(row) }
+        Ui.add(main, @table.control, stretchy: true)
+        @status = Ui.add(main, Ui.label(""))
+        buttons = Ui.add(main, Ui.hbox)
+        Ui.add(buttons, Ui.button("Edit...") { edit(@table.selected) }, stretchy: true)
+        Ui.add(buttons, Ui.button("Remove Keys") { remove }, stretchy: true)
+        Ui.add(buttons, Ui.button("Reset All") { reset_all }, stretchy: true)
+        Ui.add(buttons, Ui.button("Close") { close_editor; close_window(@win) }, stretchy: true)
+        UI.window_set_child(@win, main)
         show_window(@win)
-        Win32.set_column_widths(@table, [240, -2])
+        @table.column_width(0, 240)
+        Win32.set_column_widths(@table.control, [240, -2])
       end
 
       private
 
-      def table_rows = @rows
+      def table_rows = @actions.map { |action, label| [label, keys_text(action)] }
       def overrides = (@config["keys"] || {}).dup
       def bindings = Keymap.bindings(@config["keys"])
       def keys_text(action) = Keymap.keys_for(bindings, action).join(", ")
+      def status(text) = UI.label_set_text(@status, text)
 
-      def selected_index
-        i = @table.selection
-        i.is_a?(Integer) && i >= 0 ? i : nil
-      end
-
-      def selected_action = (i = selected_index) && @actions[i][0]
+      def selected_action = (i = @table.selected) && @actions[i][0]
 
       # A small window for one action: shows its keys and waits for a new one.
       def edit(index)
-        return @status.text = "Select an action first." unless index && @actions[index]
+        return status("Select an action first.") unless index && @actions[index]
 
-        @editor&.destroy
-        d = self
+        close_editor
         action, label_text = @actions[index]
         tap = Keymap::ModifierTap.new { |mod| Win32.modifier_side(mod) }
-        current = nil
-        replace = nil
-        catcher = nil
-        @editor = window("Edit Key - #{label_text}", 440, 250, false) {
-          margined true
-          vertical_box {
-            label("#{label_text}") { stretchy false }
-            current = label("Current keys: #{d.send(:keys_text, action).then { |t| t.empty? ? '(none)' : t }}") { stretchy false }
-            replace = checkbox("Replace the current keys (otherwise add another)") {
-              stretchy false
-              checked true
-            }
-            catcher = area {
-              on_draw do |params|
-                w = params[:area_width]
-                h = params[:area_height]
-                pen = { r: 0x4C, g: 0x8D, b: 0xFF, a: 0.9, thickness: 1.5, dashes: [5, 4] }
-                rectangle(1, 1, w - 2, h - 2) { fill r: 0xF4, g: 0xF7, b: 0xFC; stroke pen }
-                text(0, (h / 2.0) - 18, w) {
-                  align :center
-                  default_font family: "Segoe UI", size: 10.5
-                  string("Press a key or key combination now\n(Right Ctrl and other modifiers on their own work too)") { color r: 0x33, g: 0x3D, b: 0x4D }
-                }
-              end
-              on_mouse_up { |_| Win32.focus_control(catcher) }
-              on_key_event do |event|
-                chord = tap.feed(event)
-                chord ||= Keymap.chord(event) unless event[:up]
-                d.send(:bind, chord, action, replace: replace.checked) if chord
-                true
-              end
-            }
-            horizontal_box {
-              stretchy false
-              button("Clear Keys") {
-                on_clicked do
-                  d.send(:remove_action, action)
-                  current.text = "Current keys: (none)"
-                end
-              }
-              button("Close") { on_clicked { d.send(:close_editor) } }
-            }
+        @editor = Ui.window("Edit Key - #{label_text}", 440, 250)
+        UI.window_on_closing(@editor) do
+          @editor = nil
+          1
+        end
+        box = Ui.vbox
+        Ui.add(box, Ui.label(label_text))
+        current = Ui.add(box, Ui.label("Current keys: #{keys_text(action).then { |t| t.empty? ? '(none)' : t }}"))
+        replace = Ui.add(box, Ui.checkbox("Replace the current keys (otherwise add another)", checked: true))
+        @catcher = Ui::Area.new(
+          draw: ->(p) { draw_catcher(p) },
+          mouse: ->(e) { Win32.focus_control(@catcher.control) if e[:up] == 1 },
+          key: lambda { |event|
+            chord = tap.feed(event)
+            chord ||= Keymap.chord(event) unless event[:up]
+            bind(chord, action, replace: Ui.checked?(replace)) if chord
+            true
           }
-        }
+        )
+        Ui.add(box, @catcher.control, stretchy: true)
+        buttons = Ui.add(box, Ui.hbox)
+        Ui.add(buttons, Ui.button("Clear Keys") {
+          remove_action(action)
+          UI.label_set_text(current, "Current keys: (none)")
+        }, stretchy: true)
+        Ui.add(buttons, Ui.button("Close") { close_editor }, stretchy: true)
+        UI.window_set_child(@editor, box)
         show_window(@editor)
-        Win32.focus_control(catcher)
+        Win32.focus_control(@catcher.control)
+      end
+
+      def draw_catcher(params)
+        pt = @painter
+        pt.context = params[:context]
+        w = params[:area_width]
+        h = params[:area_height]
+        pt.fill_rect(1, 1, w - 2, h - 2, PAD_BG)
+        pt.stroke_rect(1, 1, w - 2, h - 2, PAD_LINE, 1.5, 0.9)
+        pt.text(0, (h / 2.0) - 18, w, "Press a key or key combination now\n(Right Ctrl and other modifiers on their own work too)",
+                PAD_TEXT, "Segoe UI", 10.5, align: :center)
       end
 
       def close_editor
-        @editor&.destroy
+        return unless @editor
+
+        editor = @editor
         @editor = nil
+        UI.queue_main { UI.control_destroy(editor) }
       end
 
       def bind(chord, action, replace: false)
@@ -366,9 +340,9 @@ module Tn3270
         o[chord] = action
         save(o)
         note = previous && previous != action ? " (was #{Keymap::ACTIONS[previous]})" : ""
-        @status.text = "#{chord} -> #{Keymap::ACTIONS[action]}#{note}"
+        status("#{chord} -> #{Keymap::ACTIONS[action]}#{note}")
         # Close after this key event has finished being handled.
-        Glimmer::LibUI.queue_main { close_editor }
+        close_editor
       end
 
       def remove_action(action)
@@ -379,78 +353,93 @@ module Tn3270
 
       def remove
         action = selected_action
-        return @status.text = "Select an action first." unless action
+        return status("Select an action first.") unless action
 
         remove_action(action)
-        @status.text = "Removed keys for #{Keymap::ACTIONS[action]}."
+        status("Removed keys for #{Keymap::ACTIONS[action]}.")
       end
 
       def reset_all
         save({})
-        @status.text = "All keys reset to defaults."
+        status("All keys reset to defaults.")
       end
 
       def save(overrides)
         # Drop overrides that match the default.
         @config["keys"] = overrides.reject { |chord, action| Keymap::DEFAULTS[chord] == action || (action == "" && !Keymap::DEFAULTS.key?(chord)) }
         @config.save
-        @actions.each_with_index { |(action, label), i| @rows[i] = [label, keys_text(action)] }
+        @table.rows = table_rows
         @on_change.call
-      end
-
-      def close
-        close_editor
-        @win.destroy
       end
     end
 
-    # View > Font...: pick the screen font. Size always follows the window.
+    # View > Font...: pick the screen font from the installed monospaced fonts,
+    # with a preview in that font. Size always follows the window.
     class FontDialog
-      include Glimmer
       include DialogSupport
+      include ScreenPainter
+
+      PREVIEW_SIZE = 13
+      # Sample lines for the preview: [text, colour, bright?]
+      SAMPLE = [
+        ["FAKEHOST                SIGN ON", :turquoise, true],
+        ["USER ID  ===> USER01    PASSWORD ===>", :green, false],
+        ["0123456789  ABCDEFGHIJKLM  abcdefghijklm", :neutral, false],
+        ["{}[]()<>|/\  @#$%&*  -_=+  .,:;'\"", :yellow, false],
+        ["PF3=End   PF7=Up   PF8=Down   ENTER=Go", :blue, false]
+      ].freeze
 
       def initialize(config, on_change:)
         @config = config
         @on_change = on_change
+        @painter = Painter.new
       end
 
       def show
-        d = self
-        @win = window("Display Font", 380, 150, false) {
-          margined true
-          vertical_box {
-            label("Current font: #{@config['font']}\nPick a monospaced font; the size follows the window.") { stretchy false }
-            @button = font_button { stretchy false }
-            horizontal_box {
-              stretchy false
-              label("")
-              button("Apply") {
-                stretchy false
-                on_clicked { d.send(:apply) }
-              }
-              button("Close") {
-                stretchy false
-                on_clicked { d.send(:close) }
-              }
-            }
-          }
-        }
+        @fonts = Fonts.monospaced(@config["font"])
+        @font = @config["font"]
+        @win = Ui.window("Display Font", 520, 300)
+        UI.window_on_closing(@win) { 1 }
+        box = Ui.vbox
+        @choice = Ui.add(box, Ui.combobox(@fonts, selected: @fonts.index(@font) || 0) { |i| pick(i) })
+        @preview = Ui::Area.new(draw: ->(p) { draw_preview(p) })
+        Ui.add(box, @preview.control, stretchy: true)
+        row = Ui.add(box, Ui.hbox)
+        Ui.add(row, Ui.label("The size follows the window."), stretchy: true)
+        Ui.add(row, Ui.button("Apply") { apply })
+        Ui.add(row, Ui.button("Close") { close_window(@win) })
+        UI.window_set_child(@win, box)
         show_window(@win)
       end
 
       private
 
-      def apply
-        family = @button.family.to_s
-        return if family.empty?
+      def pick(index)
+        return if index.negative?
 
-        @config["font"] = family
-        @config.save
-        @on_change.call
-        close
+        @font = @fonts[index]
+        @preview.redraw
       end
 
-      def close = @win.destroy
+      # A few screen-like lines in the chosen font.
+      def draw_preview(params)
+        pt = @painter
+        pt.context = params[:context]
+        pt.fill_rect(0, 0, params[:area_width], params[:area_height], BACKGROUND)
+        line = FontMetrics.for(@font)[:line] * PREVIEW_SIZE
+        SAMPLE.each_with_index do |(text, color, bright), i|
+          pt.text(12, 10 + (i * line), -1, text, PALETTE[color], @font, PREVIEW_SIZE, bold: bright)
+        end
+      end
+
+      def apply
+        return if @font.to_s.empty?
+
+        @config["font"] = @font
+        @config.save
+        @on_change.call
+        close_window(@win)
+      end
     end
   end
 end

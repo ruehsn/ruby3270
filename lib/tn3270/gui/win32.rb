@@ -5,7 +5,7 @@ require_relative "config"
 
 module Tn3270
   module Gui
-    # Windows-only touches LibUI has no API for: the window icon, and hiding
+    # Windows-only touches libui has no API for: the window icon, and hiding
     # the menu bar while still opening the same menus from a button. Every
     # method is a no-op (returns nil) on other platforms or if a call fails.
     module Win32
@@ -47,10 +47,10 @@ module Tn3270
 
       def wide(str) = Fiddle::Pointer["#{str}\0".encode("UTF-16LE")]
 
-      # HWND of a Glimmer window proxy.
-      def hwnd(window) = ::LibUI.control_handle(window.libui)
+      # HWND of a libui control (a window or any widget pointer).
+      def hwnd(control) = ::LibUI.control_handle(control)
 
-      # Sets the title bar / taskbar icon of a Glimmer window.
+      # Sets the title bar / taskbar icon of a window.
       def set_icon(window)
         return unless available? && File.exist?(ICON)
 
@@ -97,7 +97,7 @@ module Tn3270
       def focus_control(control)
         return unless available?
 
-        fn("SetFocus", [P], P).call(::LibUI.control_handle(control.libui))
+        fn("SetFocus", [P], P).call(::LibUI.control_handle(control))
       rescue StandardError
         nil
       end
@@ -107,7 +107,7 @@ module Tn3270
       def set_column_widths(table, widths)
         return unless available?
 
-        h = ::LibUI.control_handle(table.libui)
+        h = ::LibUI.control_handle(table)
         # LibUI wraps the list view in a container on some versions; use the child if so.
         child = fn("FindWindowExW", [P, P, P, P], P).call(h, nil, wide("SysListView32"), nil)
         h = child unless child.null?
@@ -125,6 +125,97 @@ module Tn3270
         fn("SetForegroundWindow", [P]).call(hwnd(window))
       rescue StandardError
         nil
+      end
+
+      # Outer size of a window, borders and menu bar included: [w, h].
+      def window_size(control)
+        rect = Fiddle::Pointer.malloc(16, Fiddle::RUBY_FREE)
+        fn("GetWindowRect", [P, P]).call(hwnd(control), rect)
+        l, t, r, b = rect[0, 16].unpack("l4")
+        [r - l, b - t]
+      end
+
+      # Inside size of a control in pixels: [w, h].
+      def client_size(control)
+        rect = Fiddle::Pointer.malloc(16, Fiddle::RUBY_FREE)
+        fn("GetClientRect", [P, P]).call(hwnd(control), rect)
+        _, _, r, b = rect[0, 16].unpack("l4")
+        [r, b]
+      end
+
+      def maximized?(window) = fn("IsZoomed", [P]).call(hwnd(window)) != 0
+
+      # The largest outer size Windows lets a window be dragged to: [w, h].
+      SM_CXMAXTRACK = 59
+      SM_CYMAXTRACK = 60
+      def max_window_size
+        metric = fn("GetSystemMetrics", [I])
+        [metric.call(SM_CXMAXTRACK), metric.call(SM_CYMAXTRACK)]
+      end
+
+      # The usable part of the monitor a window is on (screen minus taskbar):
+      # [left, top, width, height].
+      def work_area(window)
+        monitor = fn("MonitorFromWindow", [P, I], P).call(hwnd(window), 2) # MONITOR_DEFAULTTONEAREST
+        info = Fiddle::Pointer.malloc(40, Fiddle::RUBY_FREE)
+        info[0, 4] = [40].pack("l") # cbSize
+        fn("GetMonitorInfoW", [P, P]).call(monitor, info)
+        l, t, r, b = info[20, 16].unpack("l4") # rcWork
+        [l, t, r - l, b - t]
+      end
+
+      # Where a window is: [left, top].
+      def window_position(control)
+        rect = Fiddle::Pointer.malloc(16, Fiddle::RUBY_FREE)
+        fn("GetWindowRect", [P, P]).call(hwnd(control), rect)
+        rect[0, 8].unpack("l2")
+      end
+
+      # Moves and sizes a window.
+      SWP_NOZ_ACTIVATE = 0x4 | 0x10 # NOZORDER | NOACTIVATE
+      def place(window, left, top, width, height)
+        fn("SetWindowPos", [P, P, I, I, I, I, I]).call(hwnd(window), nil, left.round, top.round, width.round, height.round, SWP_NOZ_ACTIVATE)
+      end
+
+      # Changes a window's outer size, keeping its position.
+      SWP_NOMOVE_Z_ACTIVATE = 0x2 | 0x4 | 0x10 # NOMOVE | NOZORDER | NOACTIVATE
+      def resize(window, width, height)
+        fn("SetWindowPos", [P, P, I, I, I, I, I]).call(hwnd(window), nil, 0, 0, width.round, height.round, SWP_NOMOVE_Z_ACTIVATE)
+      end
+
+      # Lets the app reshape a window while the user drags its edges. The
+      # block gets the edge being dragged (WMSZ_* 1-8) and the proposed outer
+      # rectangle [left, top, right, bottom]; it returns a new rectangle, or
+      # nil to leave it alone.
+      class Sizing
+        WM_SIZING = 0x214
+        SUBCLASS_ID = 0x3271
+        LP = Fiddle::TYPE_INTPTR_T
+
+        def initialize(window, &adjust)
+          @hwnd = Win32.hwnd(window)
+          @adjust = adjust
+          comctl = Fiddle.dlopen("comctl32")
+          @def_proc = Fiddle::Function.new(comctl["DefSubclassProc"], [U, I, U, LP], LP)
+          # Kept in an instance variable so it is never garbage collected.
+          @proc = Fiddle::Closure::BlockCaller.new(LP, [U, I, U, LP, U, U]) do |hwnd, msg, wp, lp, _id, _ref|
+            msg == WM_SIZING && sizing(wp, lp) ? 1 : @def_proc.call(hwnd, msg, wp, lp)
+          end
+          Fiddle::Function.new(comctl["SetWindowSubclass"], [U, P, U, U], I).call(@hwnd.to_i, @proc, SUBCLASS_ID, 0)
+        end
+
+        private
+
+        def sizing(edge, lp)
+          ptr = Fiddle::Pointer.new(lp)
+          rect = @adjust.call(edge, ptr[0, 16].unpack("l4"))
+          return false unless rect
+
+          ptr[0, 16] = rect.map(&:round).pack("l4")
+          true
+        rescue StandardError
+          false
+        end
       end
 
       # Keeps hold of the window's menu bar so it can be hidden and shown.
@@ -306,7 +397,7 @@ module Tn3270
         def to_screen(control, x, y)
           pt = [x.round, y.round].pack("l2")
           ptr = Fiddle::Pointer[pt]
-          Win32.fn("ClientToScreen", [P, P]).call(::LibUI.control_handle(control.libui), ptr)
+          Win32.fn("ClientToScreen", [P, P]).call(::LibUI.control_handle(control), ptr)
           ptr[0, 8].unpack("l2")
         end
 

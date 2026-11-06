@@ -2,7 +2,7 @@
 
 module Tn3270
   module Gui
-    # Turns a LibUI key event into an action, using a table of key bindings
+    # Turns a libui key event (a Hash from Ui::Area) into an action, using a table of key bindings
     # ("Shift+F1" => "pf13"). Users can override any binding; overrides are
     # stored in the config under "keys", and "" there unbinds a default.
     #
@@ -55,7 +55,10 @@ module Tn3270
         "history" => "Screen history window",
         "find" => "Find on screen / in history",
         "crosshair" => "Crosshair on/off",
-        "caps" => "Caps Lock (this app only) on/off"
+        "caps" => "Caps Lock (this app only) on/off",
+        "snippet_picker" => "Snippets: quick pick",
+        "snippet_bar" => "Snippets sidebar on/off",
+        **(1..9).to_h { |n| ["snippet#{n}", "Snippet #{n} (in the sidebar list)"] }
       }.freeze
 
       # Detects a modifier pressed and released on its own ("Right Ctrl").
@@ -103,7 +106,9 @@ module Tn3270
         "Up" => "up", "Down" => "down", "Left" => "left", "Right" => "right",
         "Ctrl+C" => "copy", "Ctrl+V" => "paste",
         "Ctrl+H" => "history", "Ctrl+PageUp" => "history",
-        "Ctrl+F" => "find", "Ctrl+Shift+X" => "crosshair"
+        "Ctrl+F" => "find", "Ctrl+Shift+X" => "crosshair",
+        "Ctrl+Space" => "snippet_picker", "Ctrl+Shift+S" => "snippet_bar",
+        **(1..9).to_h { |n| ["Ctrl+#{n}", "snippet#{n}"] }
       }.freeze
 
       # Effective bindings: defaults with the user's overrides on top.
@@ -173,6 +178,9 @@ module Tn3270
         when "find" then [:find]
         when "crosshair" then [:crosshair]
         when "caps" then [:caps]
+        when "snippet_picker" then [:snippet_picker]
+        when "snippet_bar" then [:snippet_bar]
+        when /\Asnippet(\d)\z/ then [:snippet, Regexp.last_match(1).to_i]
         else [:key, action.to_sym]
         end
       end

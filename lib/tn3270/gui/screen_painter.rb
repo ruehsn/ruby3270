@@ -1,11 +1,121 @@
 # frozen_string_literal: true
 
+require_relative "ui"
 require_relative "font_metrics"
 
 module Tn3270
   module Gui
-    # Drawing shared by the main window and the history window. Include it in
-    # a class that includes Glimmer, and call it from an area's on_draw.
+    # Draws on a libui drawing context. One Painter is reused for every
+    # frame: its brush, stroke and font structs are allocated once.
+    #   painter.context = params[:context]  (inside an Area's draw handler)
+    class Painter
+      ALIGN = { left: UI::DrawTextAlignLeft, center: UI::DrawTextAlignCenter, right: UI::DrawTextAlignRight }.freeze
+      CAPS = { flat: UI::DrawLineCapFlat, round: UI::DrawLineCapRound }.freeze
+
+      attr_accessor :context
+
+      def initialize
+        @brush = UI::FFI::DrawBrush.malloc
+        @brush.Type = UI::DrawBrushTypeSolid
+        @stroke = UI::FFI::DrawStrokeParams.malloc
+        @stroke.MiterLimit = UI::DrawDefaultMiterLimit
+        @stroke.Dashes = nil
+        @stroke.NumDashes = 0
+        @stroke.DashPhase = 0
+        @layout = UI::FFI::DrawTextLayoutParams.malloc
+        @fonts = {}
+        @names = {}
+      end
+
+      # rgb: [r, g, b] 0-255; alpha 0.0-1.0
+      def fill_rect(x, y, w, h, rgb, alpha = 1.0)
+        fill(alpha, rgb) { |p| UI.draw_path_add_rectangle(p, x, y, w, h) }
+      end
+
+      def stroke_rect(x, y, w, h, rgb, thickness = 1.0, alpha = 1.0)
+        stroke(rgb, alpha, thickness) { |p| UI.draw_path_add_rectangle(p, x, y, w, h) }
+      end
+
+      def fill_circle(cx, cy, r, rgb, alpha = 1.0)
+        fill(alpha, rgb) { |p| UI.draw_path_new_figure_with_arc(p, cx, cy, r, 0, 2 * Math::PI, 0) }
+      end
+
+      def stroke_circle(cx, cy, r, rgb, thickness = 1.0, alpha = 1.0)
+        stroke(rgb, alpha, thickness) { |p| UI.draw_path_new_figure_with_arc(p, cx, cy, r, 0, 2 * Math::PI, 0) }
+      end
+
+      # points: [x1, y1, x2, y2, ...]
+      def polyline(points, rgb, thickness = 1.0, alpha = 1.0, cap: :flat)
+        stroke(rgb, alpha, thickness, cap: cap) do |p|
+          UI.draw_path_new_figure(p, points[0], points[1])
+          points.drop(2).each_slice(2) { |x, y| UI.draw_path_line_to(p, x, y) }
+        end
+      end
+
+      # Text with its top-left corner at x, y; width wraps it (-1: no wrapping).
+      def text(x, y, width, str, rgb, family, size, bold: false, align: :left, alpha: 1.0)
+        return if str.nil? || str.empty?
+
+        s = UI.new_attributed_string(str)
+        attr = UI.new_color_attribute(rgb[0] / 255.0, rgb[1] / 255.0, rgb[2] / 255.0, alpha)
+        UI.attributed_string_set_attribute(s, attr, 0, str.bytesize) # the string owns the attribute now
+        @layout.String = s
+        @layout.DefaultFont = font(family, size, bold)
+        @layout.Width = width
+        @layout.Align = ALIGN.fetch(align)
+        layout = UI.draw_new_text_layout(@layout)
+        UI.draw_text(@context, layout, x, y)
+        UI.draw_free_text_layout(layout)
+        UI.free_attributed_string(s)
+      end
+
+      private
+
+      def set_brush(rgb, alpha)
+        @brush.R = rgb[0] / 255.0
+        @brush.G = rgb[1] / 255.0
+        @brush.B = rgb[2] / 255.0
+        @brush.A = alpha
+        @brush
+      end
+
+      def path
+        p = UI.draw_new_path(UI::DrawFillModeWinding)
+        yield p
+        UI.draw_path_end(p)
+        p
+      end
+
+      def fill(alpha, rgb, &block)
+        p = path(&block)
+        UI.draw_fill(@context, p, set_brush(rgb, alpha))
+        UI.draw_free_path(p)
+      end
+
+      def stroke(rgb, alpha, thickness, cap: :flat, &block)
+        p = path(&block)
+        @stroke.Thickness = thickness
+        @stroke.Cap = CAPS.fetch(cap)
+        @stroke.Join = cap == :round ? UI::DrawLineJoinRound : UI::DrawLineJoinMiter
+        UI.draw_stroke(@context, p, set_brush(rgb, alpha), @stroke)
+        UI.draw_free_path(p)
+      end
+
+      def font(family, size, bold)
+        @fonts[[family, size, bold]] ||= begin
+          f = UI::FFI::FontDescriptor.malloc
+          @names[family] ||= Fiddle::Pointer["#{family}\0"] # kept alive with the descriptor
+          f.Family = @names[family]
+          f.Size = size
+          f.Weight = bold ? UI::TextWeightBold : UI::TextWeightNormal
+          f.Italic = UI::TextItalicNormal
+          f.Stretch = UI::TextStretchNormal
+          f
+        end
+      end
+    end
+
+    # Drawing shared by the main window and the history window.
     module ScreenPainter
       # 3270 color name -> RGB
       PALETTE = {
@@ -16,8 +126,6 @@ module Tn3270
         pale_green: [0xA8, 0xF0, 0xA8], pale_turquoise: [0xAF, 0xEE, 0xEE], grey: [0xA0, 0xA0, 0xA0]
       }.freeze
       BACKGROUND = [0x0B, 0x0E, 0x12].freeze
-
-      def rgb(arr, alpha = 1.0) = { r: arr[0], g: arr[1], b: arr[2], a: alpha }
 
       # Largest font size that fits rows x cols (plus `extra_rows`) into the
       # box, and the grid placed in its center:
@@ -35,37 +143,34 @@ module Tn3270
 
       # Draws every character of a screen. Each row is drawn as runs of
       # same-styled text, each run placed at its own column so it can't drift.
-      def paint_cells(scr, size, cw, ch, ox, oy, font, underline: true)
+      def paint_cells(pt, scr, size, cw, ch, ox, oy, font, underline: true)
         scr.rows.times do |r|
           y = oy + (r * ch)
           style_runs(scr, r).each do |col, str, cell|
             x = ox + (col * cw)
             fg = PALETTE[cell.color] || PALETTE[:green]
             if cell.highlight == 0xF2 # reverse video
-              rectangle(x, y, str.size * cw, ch) { fill rgb(fg) }
+              pt.fill_rect(x, y, str.size * cw, ch, fg)
               fg = BACKGROUND
             end
             if (underline && cell.input) || cell.highlight == 0xF4
-              rectangle(x, y + ch - [ch * 0.08, 1].max, str.size * cw, [ch * 0.06, 1].max) { fill rgb(fg, 0.55) }
+              pt.fill_rect(x, y + ch - [ch * 0.08, 1].max, str.size * cw, [ch * 0.06, 1].max, fg, 0.55)
             end
             next if str.strip.empty?
 
-            text(x, y, (str.size + 4) * cw) {
-              default_font family: font, size: size, weight: cell.bright ? :bold : :normal
-              string(str) { color rgb(fg) }
-            }
+            pt.text(x, y, (str.size + 4) * cw, str, fg, font, size, bold: cell.bright)
           end
         end
       end
 
       # A miniature of a screen: each word becomes a small colored bar.
       # Much cheaper than text and still recognisable at thumbnail size.
-      def paint_minimap(scr, x, y, width, height)
+      def paint_minimap(pt, scr, x, y, width, height)
         cw = width / scr.cols.to_f
         ch = height / scr.rows.to_f
         bar_h = [ch * 0.7, 1].max
         minimap_runs(scr).each do |row, c1, c2, color|
-          rectangle(x + (c1 * cw), y + (row * ch), (c2 - c1 + 1) * cw, bar_h) { fill rgb(PALETTE[color] || PALETTE[:green], 0.9) }
+          pt.fill_rect(x + (c1 * cw), y + (row * ch), (c2 - c1 + 1) * cw, bar_h, PALETTE[color] || PALETTE[:green], 0.9)
         end
       end
 

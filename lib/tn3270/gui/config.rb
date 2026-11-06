@@ -21,7 +21,9 @@ module Tn3270
 
       DEFAULT_CONNECTION = {
         "name" => "Local fake host", "host" => "127.0.0.1", "port" => 3270, "tls" => false,
-        "lu" => "", "rows" => 62, "cols" => 160
+        "lu" => "", "rows" => 62, "cols" => 160,
+        "verify_cert" => false, # TLS: check the host's certificate (off: self-signed certificates work)
+        "script" => "" # Ruby file run each time this connection comes up ("" = none)
       }.freeze
 
       DEFAULTS = {
@@ -37,7 +39,15 @@ module Tn3270
         "caps" => false, # the app's own Caps Lock (status bar button); doesn't touch the keyboard's
         "crosshair" => false, # highlight the cursor's row and column
         "custom_title_bar" => true, # Windows: menus drawn inside the title bar, VS Code style
-        "hide_menu_bar" => true, # Windows, without custom_title_bar: menus open from the button in the status bar
+        "lock_ratio" => true, # Windows: resizing keeps the window the shape of the screen, so there's no empty band
+        "key_bar" => false, # the on-screen PF / Reset / Clear... key bar
+        "snippet_bar" => false, # the snippets sidebar
+        "personal_snippets" => nil, # your snippet file (nil: ~/.ruby3270-snippets.yml)
+        "snippet_files" => [], # shared snippet files or folders, e.g. a team file on a network drive
+        "snippet_wait_seconds" => 30, # how long {wait:TEXT} in a snippet waits
+        "allow_attach" => true, # let scripts on this computer drive the open session (Tn3270::Session.attach)
+        "script_port" => 3271, # ...on this port, on this computer only (127.0.0.1)
+        "hide_menu_bar" => false, # without the custom title bar: menus open from the ☰ button in the status bar
         "last_connection" => nil, # name of the connection the status-bar button reconnects to
         "desktop_shortcuts" => true, # Windows: saving a connection puts a shortcut to it on the desktop
         "recent" => [], # connection names, most recently used first (orders the Session menu)
@@ -64,17 +74,31 @@ module Tn3270
       end
 
       # "host:port", "L:host:port" (TLS) or "LU@host:port" -> connection hash.
+      # A "Y:" prefix (don't verify the certificate) is accepted too; typed
+      # connections never verify, like new saved ones.
       def self.connection_from_string(text, rows: DEFAULTS["rows"], cols: DEFAULTS["cols"])
         rest = text.to_s.strip
-        tls = rest.sub!(/\A[Ll]:/, "") ? true : false
+        tls = false
+        while (m = rest.match(/\A([LlYy]):/))
+          tls = true if m[1].casecmp?("L")
+          rest = m.post_match
+        end
         lu, rest = rest.split("@", 2) if rest.include?("@")
         host, port = rest.split(":", 2)
-        { "name" => text.to_s.strip, "host" => host.to_s, "port" => (port || 23).to_i, "tls" => tls,
-          "lu" => lu.to_s, "rows" => rows, "cols" => cols }
+        DEFAULT_CONNECTION.merge("name" => text.to_s.strip, "host" => host.to_s, "port" => (port || 23).to_i,
+                                 "tls" => tls, "lu" => lu.to_s, "rows" => rows, "cols" => cols)
       end
 
-      # The string s3270's Connect() action takes.
+      # The string s3270's Connect() action takes. "Y:" tells it not to
+      # verify the host's TLS certificate.
       def self.connect_string(conn)
+        return display_string(conn) unless conn["tls"] && !conn["verify_cert"]
+
+        "Y:#{display_string(conn)}"
+      end
+
+      # "L:LU@host:port", without the "Y:", for menus and messages.
+      def self.display_string(conn)
         prefix = conn["tls"] ? "L:" : ""
         lu = conn["lu"].to_s.strip.empty? ? "" : "#{conn['lu'].strip}@"
         "#{prefix}#{lu}#{conn['host'].to_s.strip}:#{conn['port'].to_i}"

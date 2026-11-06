@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 # Tests the GUI's keyboard mapping and background controller without
-# opening a window (no Glimmer needed):  ruby -Ilib test/gui_logic_test.rb
+# opening a window (no libui needed):  ruby -Ilib test/gui_logic_test.rb
 require "minitest/autorun"
 require "tmpdir"
 require "fileutils"
@@ -99,8 +99,12 @@ class ConfigTest < Minitest::Test
   def test_connection_strings
     c = C.connection_from_string("L:LU01@mvs.example.com:992")
     assert_equal ["mvs.example.com", 992, true, "LU01"], c.values_at("host", "port", "tls", "lu")
-    assert_equal "L:LU01@mvs.example.com:992", C.connect_string(c)
+    # Certificates aren't verified unless the connection asks: "Y:" tells s3270 so.
+    assert_equal "Y:L:LU01@mvs.example.com:992", C.connect_string(c)
+    assert_equal "L:LU01@mvs.example.com:992", C.connect_string(c.merge("verify_cert" => true))
+    assert_equal "L:LU01@mvs.example.com:992", C.display_string(c)
     assert_equal "h:23", C.connect_string(C.connection_from_string("h"))
+    assert C.connection_from_string("Y:L:h:992")["tls"]
   end
 
   def test_old_hosts_list_is_migrated
@@ -139,6 +143,7 @@ class ControllerTest < Minitest::Test
     @host = Tn3270::FakeHost.new(port: 0, log: nil).start
     @dir = Dir.mktmpdir
     cfg = Tn3270::Gui::Config.load(File.join(@dir, "cfg.yml"))
+    cfg["allow_attach"] = false # tests must never reach for a real window's port
     @changes = 0
     @c = Tn3270::Gui::Controller.new(cfg, on_change: -> { @changes += 1 })
   end
@@ -214,5 +219,102 @@ class ControllerTest < Minitest::Test
     wait_until { @c.message.to_s.include?("NUMERIC") }
     @c.type("42")
     wait_until { @c.screen_text.match?(/Numeric only: +42/) }
+  end
+  def test_startup_script_runs_once_connected
+    script = File.join(@dir, "logon.rb")
+    File.write(script, <<~SCRIPT)
+      wait_for_text("USER ID")
+      fill("USER ID", connection["name"] == "t" ? "scripted" : "wrong")
+      enter
+      session.wait_for_text("MAIN MENU")
+      status "Logged on by script"
+    SCRIPT
+    conn = Tn3270::Gui::Config::DEFAULT_CONNECTION.merge("name" => "t", "port" => @host.port, "script" => script)
+    @c.connect(conn)
+    wait_until { @c.message == "Logged on by script" }
+    assert_includes @c.screen_text, "Signed on as SCRIPTED"
+  end
+
+  def test_startup_script_error_shows_in_status_bar
+    script = File.join(@dir, "bad.rb")
+    File.write(script, "wait_for_text('USER ID')\nno_such_method_here\n")
+    @c.connect(Tn3270::Gui::Config::DEFAULT_CONNECTION.merge("port" => @host.port, "script" => script))
+    wait_until { @c.message.to_s.start_with?("Startup script failed") }
+    assert_includes @c.message, "line 2"
+  end
+
+  # TLS to a host that doesn't use it: the handshake never finishes. The
+  # controller gives up, says why, and stays usable.
+  def test_hanging_tls_connect_gives_up_and_recovers
+    @c.instance_variable_get(:@config)["connect_timeout"] = 2
+    tls = Tn3270::Gui::Config::DEFAULT_CONNECTION.merge("port" => @host.port, "tls" => true)
+    @c.connect(tls)
+    wait_until(8) { @c.message.to_s.start_with?("Could not connect") } # no answer, or the handshake failed
+    assert_includes @c.message, "untick Use TLS"
+    refute @c.connecting?
+    @c.connect("127.0.0.1:#{@host.port}") # a fresh engine took over
+    wait_until { @c.screen_text.include?("USER ID") }
+  end
+
+  # Returns a lambda giving how many Enter keys the controller has sent from now on.
+  def count_enter_presses
+    n = 0
+    @c.define_singleton_method(:send_key) { |key| n += 1 if key == :enter; super(key) }
+    -> { n }
+  end
+
+  def test_auto_enter_loop
+    @c.instance_variable_get(:@config)["auto_enter_seconds"] = 0.5
+    sign_on_to("1", "KEY TESTER")
+    presses = count_enter_presses
+    @c.auto_enter = true
+    assert @c.auto_enter?
+    wait_until(6) { presses.call >= 3 } # Enter pressed again and again
+    assert_match(/Last AID received:\s+ENTER/, @c.screen_text)
+    @c.auto_enter = false
+    sleep 1 # let a press already in flight finish
+    count = presses.call
+    sleep 1.5
+    assert_equal count, presses.call, "kept pressing after being switched off"
+  end
+
+  def test_auto_enter_waits_for_a_slow_host_and_stops_on_disconnect
+    @c.instance_variable_get(:@config)["auto_enter_seconds"] = 0.2
+    sign_on_to("4", "KEY TESTER (SLOW HOST)") # answers each key after 2 seconds
+    presses = count_enter_presses
+    @c.auto_enter = true
+    sleep 3
+    assert_operator presses.call, :<=, 2, "pressed Enter before the host answered"
+    @c.disconnect
+    wait_until { !@c.auto_enter? }
+    assert_includes @c.message, "not connected"
+  end
+
+# Two windows: the second one takes the next free port instead of the first one's.
+def test_second_window_uses_the_next_free_port
+  require "socket"
+  server = TCPServer.new("127.0.0.1", 0) # stands in for the first window
+  taken = server.addr[1]
+  Thread.new { loop { server.accept.close } }
+  cfg = Tn3270::Gui::Config.load(File.join(@dir, "second.yml"))
+  cfg["allow_attach"] = true
+  cfg["script_port"] = taken
+  second = Tn3270::Gui::Controller.new(cfg, on_change: -> {})
+  refute_nil second.attach_port
+  refute_equal taken, second.attach_port
+  second.connect("127.0.0.1:#{@host.port}")
+  wait_until { second.screen_text.include?("USER ID") }
+ensure
+  second&.shutdown
+  server&.close
+end
+
+  def test_shutdown_during_a_hanging_connect
+    @c.connect(Tn3270::Gui::Config::DEFAULT_CONNECTION.merge("port" => @host.port, "tls" => true))
+    sleep 0.5
+    t = Time.now
+    @c.shutdown # must not raise or wait for the connect
+    assert_operator Time.now - t, :<, 5
+    @c = Tn3270::Gui::Controller.new(Tn3270::Gui::Config.load(File.join(@dir, "cfg2.yml")), on_change: -> {})
   end
 end

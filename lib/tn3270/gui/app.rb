@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "glimmer-dsl-libui"
+require_relative "ui"
 require_relative "../session"
 require_relative "config"
 require_relative "keymap"
@@ -10,6 +10,7 @@ require_relative "screen_painter"
 require_relative "dialogs"
 require_relative "history_window"
 require_relative "find_window"
+require_relative "snippet_panel"
 require_relative "win32"
 
 module Tn3270
@@ -17,9 +18,8 @@ module Tn3270
     # The desktop window: a screen that scales with the window, optional PF
     # key bar, and a status bar with a menu button and a connect button.
     class App
-      include Glimmer
-      include DialogSupport
       include ScreenPainter
+      include SnippetPanel
 
       STATUS_BG = [0x1C, 0x22, 0x2B].freeze
       CURSOR = [0xFF, 0xFF, 0xFF].freeze
@@ -31,6 +31,7 @@ module Tn3270
       CAPS_ON = [0xFF, 0xC4, 0x3D].freeze
       CROSSHAIR = [0x8C, 0xB4, 0xFF].freeze
       FIND_HIT = [0xFF, 0xD2, 0x3F].freeze
+      WHITE = [0xFF, 0xFF, 0xFF].freeze
 
       # Title bar (menus in the title bar, VS Code style)
       TITLE_H = 32
@@ -42,24 +43,29 @@ module Tn3270
       STATUS_H = 26 # status bar height in pixels
       STATUS_FONT_SIZE = 9.5
       RECENT_SLOTS = 8 # saved sessions listed in the Session menu
-      RECENT_FIRST = 3 # their position: after Connections, Connect/Disconnect, separator
+      RECENT_FIRST = 4 # their position in the Session menu: after Connections, Connect/Disconnect, Allow Scripts, separator
       UI_FONT = Config::WINDOWS ? "Segoe UI" : "Sans"
       UI_SIZE = 9.0
+      PUMP_MS = 25 # how often the main thread checks for screen changes
 
       def initialize(host: nil, session: nil)
         @config = Config.load
         @bindings = Keymap.bindings(@config["keys"])
         @tap = Keymap::ModifierTap.new { |mod| Win32.modifier_side(mod) }
-        @controller = Controller.new(@config, on_change: -> { changed })
+        @controller = Controller.new(@config, on_change: -> { @dirty = true })
         @initial_host = host
         @initial_session = session
         @selection = nil # [row1, col1, row2, col2]
         @drag_anchor = nil
         @status_hits = {}
         @history_window = nil
+        @painter = Painter.new
+        @dirty = false
+        @menu = {} # menu items by name; they hold their click handlers
       end
 
       def launch
+        UI.init
         build_menus
         build_window
         Win32.set_icon(@window)
@@ -71,24 +77,67 @@ module Tn3270
           refresh_recent_menu
         end
         @menu_bar.visible = false if menu_bar_hidden?
+        @sizing = Win32::Sizing.new(@window) { |edge, rect| shaped_rect(edge, rect) } if Win32.available?
+        toggle_keybar(true) if @config["key_bar"]
+        @reshape = true # start in the screen's shape
         connect_at_start
-        @window.show
+        # The worker thread only sets @dirty; libui may only be used from here.
+        UI.timer(PUMP_MS) do
+          pump
+          1
+        end
+        UI.control_show(@window)
+        UI.main
+        quit_app
       end
 
       private
 
       attr_reader :controller, :config
 
-      # Called from the worker thread whenever something changes.
-      def changed
-        Glimmer::LibUI.queue_main do
-          @area&.queue_redraw_all
-          @history_window&.refresh
-          @find_window&.refresh
+      # Redraws if the worker saw a change since the last tick, and reshapes
+      # the window when something asked for it.
+      def pump
+        # (Sizes are known after the first draw; until then the request waits.)
+        if @reshape && @area_size
+          @reshape = false
+          fit_window_to_screen
         end
+        tooltip_tick
+        return unless @dirty
+
+        @dirty = false
+        # The loop can stop by itself (disconnect, keyboard error): keep the menu in step.
+        sync_auto_enter_item
+        redraw
+        @history_window&.refresh
+        @find_window&.refresh
       end
 
-      def redraw = @area&.queue_redraw_all
+      # Status bar ENTER button / Keys > Auto Enter: press Enter over and over,
+      # a pause after each answer, until switched off.
+      def set_auto_enter(on)
+        @controller.auto_enter = on
+        sync_auto_enter_item
+        redraw
+      end
+
+      def sync_auto_enter_item
+        on = @controller.auto_enter?
+        return if @auto_enter_shown == on
+
+        @auto_enter_shown = on
+        UI.menu_item_set_checked(@auto_enter_item, Ui.flag(on))
+      end
+
+      def redraw = @area&.redraw
+
+      def quit_app
+        return if @quitting
+
+        @quitting = true
+        @controller.shutdown
+      end
 
       # The menus are drawn in our own title bar (Windows).
       def custom_title? = @title_bar&.installed? || false
@@ -107,121 +156,132 @@ module Tn3270
 
       # ---- menus ---------------------------------------------------------------
 
+      def item(menu, label, &block)
+        it = UI.menu_append_item(menu, label)
+        UI.menu_item_on_clicked(it) { block.call; nil }
+        @menu[label] = it
+      end
+
+      def check_item(menu, label, checked, &block)
+        it = UI.menu_append_check_item(menu, label)
+        UI.menu_item_set_checked(it, Ui.flag(checked))
+        UI.menu_item_on_clicked(it) { block.call(UI.menu_item_checked(it) == 1); nil }
+        @menu[label] = it
+      end
+
       def build_menus
-        app = self
-        menu("Session") {
-          menu_item("Connections...") { on_clicked { app.send(:connections_dialog) } }
-          menu_item("Connect / Disconnect") { on_clicked { app.send(:toggle_connection) } }
-          separator_menu_item
-          # Placeholders for saved sessions; their text is filled in on Windows
-          # (see refresh_recent_menu).
-          if Win32.available?
-            RECENT_SLOTS.times do |i|
-              menu_item("Session #{i + 1}") { on_clicked { app.send(:connect_recent, i) } }
-            end
-          end
-          # LibUI puts a separator before Quit by itself.
-          quit_menu_item { on_clicked { app.send(:controller).shutdown } }
-        }
-        menu("Edit") {
-          menu_item("Copy (selection or screen)") { on_clicked { app.send(:copy) } }
-          menu_item("Copy Whole Screen") { on_clicked { app.send(:copy_screen) } }
-          menu_item("Paste") { on_clicked { app.send(:paste) } }
-          separator_menu_item
-          menu_item("Find...") { on_clicked { app.send(:show_find) } }
-          separator_menu_item
-          @caps_item = check_menu_item("Caps Lock (this app only)") {
-            checked app.send(:config)["caps"]
-            on_clicked { |item| app.send(:set_caps, item.checked) }
-          }
-        }
-        menu("Keys") {
-          menu_item("Keyboard Mapping...") { on_clicked { app.send(:keys_dialog) } }
-          check_menu_item("Type-Ahead (queue keys while the host is busy)") {
-            checked app.send(:config)["typeahead"]
-            on_clicked { |item| app.send(:set_option, "typeahead", item.checked) }
-          }
-          check_menu_item("Numeric Fields: Digits Only") {
-            checked app.send(:config)["numeric_lock"]
-            on_clicked { |item| app.send(:set_option, "numeric_lock", item.checked) }
-          }
-          separator_menu_item
-          %i[pa1 pa2 pa3 clear attn sysreq reset erase_input].each do |k|
-            menu_item(k.to_s.upcase.tr("_", " ")) { on_clicked { app.send(:send_key, k) } }
-          end
-          separator_menu_item
-          (13..24).each do |n|
-            menu_item("PF#{n}") { on_clicked { app.send(:send_key, :"pf#{n}") } }
-          end
-        }
-        menu("View") {
-          menu_item("Screen History...") { on_clicked { app.send(:show_history) } }
-          menu_item("Font...") { on_clicked { app.send(:font_dialog) } }
-          separator_menu_item
-          @crosshair_item = check_menu_item("Crosshair") {
-            checked app.send(:config)["crosshair"]
-            on_clicked { |item| app.send(:set_crosshair, item.checked) }
-          }
-          check_menu_item("PF Key Bar") {
-            on_clicked { |item| app.send(:toggle_keybar, item.checked) }
-          }
-          check_menu_item("Underline Input Fields") {
-            checked app.send(:config)["underline_input_fields"]
-            on_clicked { |item| app.send(:set_underline, item.checked) }
-          }
-          if Win32.available?
-            separator_menu_item
-            check_menu_item("Menus in Title Bar") {
-              checked app.send(:config)["custom_title_bar"]
-              on_clicked { |item| app.send(:set_custom_title, item.checked) }
-            }
-            check_menu_item("Hide Menu Bar (menus open from ☰)") {
-              checked app.send(:config)["hide_menu_bar"]
-              on_clicked { |item| app.send(:set_menu_hidden, item.checked) }
-            }
-          end
-        }
-        menu("Help") {
-          menu_item("Keyboard...") { on_clicked { app.send(:keyboard_help) } }
-          about_menu_item { on_clicked { msg_box("About", "ruby3270 #{Tn3270::VERSION}\nA 3270 terminal in Ruby\nEngine: s3270 (x3270 suite)") } }
-        }
+        m = UI.new_menu("Session")
+        item(m, "Connections...") { connections_dialog }
+        item(m, "Connect / Disconnect") { toggle_connection }
+        check_item(m, "Allow Scripts to Attach", @config["allow_attach"]) do |on|
+          set_option("allow_attach", on)
+          @controller.attach_setting_changed
+        end
+        UI.menu_append_separator(m)
+        # Placeholders for saved sessions; their text is filled in on Windows
+        # (see refresh_recent_menu).
+        if Win32.available?
+          RECENT_SLOTS.times { |i| item(m, "Session #{i + 1}") { connect_recent(i) } }
+        end
+        # libui puts a separator before Quit by itself.
+        @menu[:quit] = UI.menu_append_quit_item(m)
+        UI.on_should_quit do
+          quit_app
+          UI.control_destroy(@window)
+          1
+        end
+
+        m = UI.new_menu("Edit")
+        item(m, "Copy (selection or screen)") { copy }
+        item(m, "Copy Whole Screen") { copy_screen }
+        item(m, "Paste") { paste }
+        UI.menu_append_separator(m)
+        item(m, "Find...") { show_find }
+        UI.menu_append_separator(m)
+        item(m, "Snippets: Quick Pick...") { open_picker }
+        item(m, "New Snippet from Selection...") { snippet_from_selection }
+        UI.menu_append_separator(m)
+        @caps_item = check_item(m, "Caps Lock (this app only)", @config["caps"]) { |on| set_caps(on) }
+
+        m = UI.new_menu("Keys")
+        item(m, "Keyboard Mapping...") { keys_dialog }
+        @auto_enter_item = check_item(m, "Auto Enter (press Enter every #{@controller.auto_enter_seconds.round(1)}s, to watch a job)", false) do |on|
+          set_auto_enter(on)
+        end
+        check_item(m, "Type-Ahead (queue keys while the host is busy)", @config["typeahead"]) { |on| set_option("typeahead", on) }
+        check_item(m, "Numeric Fields: Digits Only", @config["numeric_lock"]) { |on| set_option("numeric_lock", on) }
+        UI.menu_append_separator(m)
+        %i[pa1 pa2 pa3 clear attn sysreq reset erase_input].each do |k|
+          item(m, k.to_s.upcase.tr("_", " ")) { send_key(k) }
+        end
+        UI.menu_append_separator(m)
+        (13..24).each { |n| item(m, "PF#{n}") { send_key(:"pf#{n}") } }
+
+        m = UI.new_menu("View")
+        item(m, "Screen History...") { show_history }
+        item(m, "Font...") { font_dialog }
+        UI.menu_append_separator(m)
+        @crosshair_item = check_item(m, "Crosshair", @config["crosshair"]) { |on| set_crosshair(on) }
+        @keybar_item = check_item(m, "Key Bar (PF, Reset, Clear...)", @config["key_bar"]) { |on| toggle_keybar(on) }
+        @snippet_item = check_item(m, "Snippets Sidebar", @config["snippet_bar"]) { |on| toggle_snippet_bar(on) }
+        check_item(m, "Underline Input Fields", @config["underline_input_fields"]) { |on| set_underline(on) }
+        if Win32.available?
+          UI.menu_append_separator(m)
+          check_item(m, "Lock Window Shape to the Screen", @config["lock_ratio"]) { |on| set_lock_ratio(on) }
+        end
+
+        m = UI.new_menu("Help")
+        item(m, "Keyboard...") { keyboard_help }
+        @menu[:about] = UI.menu_append_about_item(m)
+        UI.menu_item_on_clicked(@menu[:about]) do
+          msg_box("About", "ruby3270 #{Tn3270::VERSION}\nA 3270 terminal in Ruby\nEngine: s3270 (x3270 suite)")
+          nil
+        end
       end
 
       # ---- window --------------------------------------------------------------
 
       def build_window
-        app = self
-        @window = window("ruby3270 - not connected", 1400, 860) {
-          margined false
-          on_closing { app.send(:controller).shutdown }
+        @window = Ui.window("ruby3270 - not connected", 1400, 860, menubar: true, margined: false)
+        UI.window_on_closing(@window) do
+          quit_app
+          UI.quit
+          1
+        end
 
-          vertical_box {
-            padded false
-            @area = area {
-              on_draw { |params| app.send(:draw, params) }
-              on_key_event { |event| app.send(:key, event) }
-              on_mouse_down { |event| app.send(:mouse_down, event) }
-              on_mouse_drag { |event| app.send(:mouse_drag, event) }
-              on_mouse_up { |event| app.send(:mouse_up, event) }
-              on_mouse_move { |event| app.send(:mouse_move, event) }
-              on_mouse_exit { app.send(:title_hover, nil) }
-            }
+        box = Ui.vbox(padded: false)
+        @area = Ui::Area.new(draw: ->(p) { draw(p) }, mouse: ->(e) { mouse(e) },
+                             key: ->(e) { key(e) }, crossed: lambda { |_left|
+                               title_hover(nil)
+                               hide_tooltip
+                             })
+        Ui.add(box, @area.control, stretchy: true)
 
-            # Below the screen, so it never sits above the title bar.
-            @keybar = vertical_box {
-              stretchy false
-              visible false
-              [(1..12), (13..24)].each do |range|
-                horizontal_box {
-                  range.each do |n|
-                    button("PF#{n}") { on_clicked { app.send(:send_key, :"pf#{n}") } }
-                  end
-                }
-              end
-            }
-          }
-        }
+        # Below the screen, so it never sits above the title bar.
+        @keybar = Ui.grid(padded: false)
+        KEYBAR.each do |label, key, col, row|
+          Ui.grid_add(@keybar, Ui.button(label) { keybar_press(key) }, col, row)
+        end
+        Ui.add(box, @keybar)
+        Ui.hide(@keybar)
+        UI.window_set_child(@window, box)
       end
+
+      # The key bar: [label, key, column, row]. PF keys in two rows, then the
+      # keys that are awkward to reach on a PC keyboard.
+      KEYBAR = [
+        *(1..24).map { |n| ["PF#{n}", :"pf#{n}", (n - 1) % 12, (n - 1) / 12] },
+        ["Reset", :reset, 12, 0], ["Clear", :clear, 13, 0], ["Attn", :attn, 14, 0],
+        ["New Line", :newline, 12, 1], ["SysReq", :sysreq, 13, 1]
+      ].freeze
+
+      # A key bar button sends its key, then gives the keyboard back to the screen.
+      def keybar_press(key)
+        send_key(key)
+        Win32.focus_control(@area.control)
+      end
+
+      def msg_box(title, text) = UI.msg_box(@window, title, text)
 
       # ---- drawing -------------------------------------------------------------
 
@@ -230,13 +290,19 @@ module Tn3270
       def metrics(width, height)
         rows, cols = grid_size
         top = title_h + 4
-        fit_grid(rows, cols, 0, top, width, height - top - STATUS_H - 4, @config["font"], top: true)
+        fit_grid(rows, cols, 0, top, width - panel_w, height - top - STATUS_H - 4, @config["font"], top: true)
       end
 
       def draw(params)
+        pt = @painter
+        pt.context = params[:context]
         w = params[:area_width]
         h = params[:area_height]
-        rectangle(0, 0, w, h) { fill rgb(BACKGROUND) }
+        @area_size = [w, h]
+        # A new screen size (another host) reshapes the window to match.
+        @reshape = true if @shaped_for && @shaped_for != grid_size
+        @shaped_for ||= grid_size
+        pt.fill_rect(0, 0, w, h, BACKGROUND)
         draw_title_bar(w) if custom_title?
 
         size, cw, ch, ox, oy = metrics(w, h)
@@ -245,14 +311,17 @@ module Tn3270
 
         if scr
           draw_crosshair(scr, cw, ch, ox, oy) if @config["crosshair"] && scr.status&.connected?
-          paint_cells(scr, size, cw, ch, ox, oy, font, underline: @config["underline_input_fields"])
+          paint_cells(pt, scr, size, cw, ch, ox, oy, font, underline: @config["underline_input_fields"])
           draw_find_matches(scr, cw, ch, ox, oy)
           draw_cursor(scr, cw, ch, ox, oy) if scr.status&.connected?
           draw_selection(cw, ch, ox, oy)
           # Dim the last screen once the session has ended.
-          rectangle(ox, oy, cw * scr.cols, ch * scr.rows) { fill rgb(BACKGROUND, 0.6) } unless scr.status&.connected?
+          pt.fill_rect(ox, oy, cw * scr.cols, ch * scr.rows, BACKGROUND, 0.6) unless scr.status&.connected?
         end
         draw_status(scr, w, h, font)
+        draw_snippet_panel(w, h) if snippet_bar_shown?
+        draw_picker(w, h) if @picker
+        draw_tooltip(w, h) if @tip_shown && @hover
         update_title(scr)
       end
 
@@ -260,17 +329,16 @@ module Tn3270
         x = ox + (scr.cursor_col * cw)
         y = oy + (scr.cursor_row * ch)
         if @controller.insert_mode
-          rectangle(x, y, [cw * 0.15, 2].max, ch) { fill rgb(CURSOR) }
+          @painter.fill_rect(x, y, [cw * 0.15, 2].max, ch, CURSOR)
         else
-          rectangle(x, y + (ch * 0.8), cw, ch * 0.2) { fill rgb(CURSOR, 0.85) }
+          @painter.fill_rect(x, y + (ch * 0.8), cw, ch * 0.2, CURSOR, 0.85)
         end
       end
 
       # Faint bands along the cursor's row and column, for lining up columns.
       def draw_crosshair(scr, cw, ch, ox, oy)
-        band = rgb(CROSSHAIR, 0.09)
-        rectangle(ox, oy + (scr.cursor_row * ch), cw * scr.cols, ch) { fill band }
-        rectangle(ox + (scr.cursor_col * cw), oy, cw, ch * scr.rows) { fill band }
+        @painter.fill_rect(ox, oy + (scr.cursor_row * ch), cw * scr.cols, ch, CROSSHAIR, 0.09)
+        @painter.fill_rect(ox + (scr.cursor_col * cw), oy, cw, ch * scr.rows, CROSSHAIR, 0.09)
       end
 
       # Every Find match in yellow; the current one stronger and outlined.
@@ -283,8 +351,8 @@ module Tn3270
           current = i == @find[:index]
           x = ox + (c * cw)
           y = oy + (r * ch)
-          rectangle(x, y, len * cw, ch) { fill rgb(FIND_HIT, current ? 0.55 : 0.28) }
-          rectangle(x, y, len * cw, ch) { stroke rgb(FIND_HIT).merge(thickness: 1.5) } if current
+          @painter.fill_rect(x, y, len * cw, ch, FIND_HIT, current ? 0.55 : 0.28)
+          @painter.stroke_rect(x, y, len * cw, ch, FIND_HIT, 1.5) if current
         end
       end
 
@@ -293,7 +361,7 @@ module Tn3270
 
         r1, r2 = [@selection[0], @selection[2]].minmax
         c1, c2 = [@selection[1], @selection[3]].minmax
-        rectangle(ox + (c1 * cw), oy + (r1 * ch), (c2 - c1 + 1) * cw, (r2 - r1 + 1) * ch) { fill rgb(SELECTION, 0.35) }
+        @painter.fill_rect(ox + (c1 * cw), oy + (r1 * ch), (c2 - c1 + 1) * cw, (r2 - r1 + 1) * ch, SELECTION, 0.35)
       end
 
       # The status bar, pinned across the bottom of the window: [menu]
@@ -301,9 +369,10 @@ module Tn3270
       # size / cursor position on the right. Its size doesn't change with the
       # screen font size.
       def draw_status(scr, w, h, font)
+        pt = @painter
         y = h - STATUS_H
-        rectangle(0, y, w, STATUS_H) { fill rgb(STATUS_BG) }
-        rectangle(0, y, w, 1) { fill rgb([0x2A, 0x33, 0x40]) }
+        pt.fill_rect(0, y, w, STATUS_H, STATUS_BG)
+        pt.fill_rect(0, y, w, 1, [0x2A, 0x33, 0x40])
         fm = FontMetrics.for(font)
         size = STATUS_FONT_SIZE
         cw = fm[:advance] * size
@@ -350,7 +419,16 @@ module Tn3270
           rx -= (timing.size + 3) * cw
           status_text(rx, text_y, timing, TITLE_MUTED, size, cw, font)
         end
-        rx = draw_caps_button(rx - (cw * 2), y, cw, size, font, text_y)
+        # Scripts can attach to this session (Session > Allow Scripts to Attach).
+        if (port = @controller.attach_port)
+          label = "PORT #{port}"
+          rx -= (label.size + 3) * cw
+          status_text(rx, text_y, label, TITLE_MUTED, size, cw, font)
+        end
+        rx = draw_toggle(:caps, "CAPS", @config["caps"], rx - (cw * 2), y, cw, size, font, text_y)
+        rx = draw_toggle(:fk, "FK", keybar_shown?, rx - cw, y, cw, size, font, text_y)
+        rx = draw_toggle(:auto_enter, "ENTER", @controller.auto_enter?, rx - cw, y, cw, size, font, text_y)
+        rx = draw_toggle(:snip, "SNIP", snippet_bar_shown?, rx - cw, y, cw, size, font, text_y)
 
         max_chars = [((rx - x) / cw).floor - 1, 0].max
         line = (left.ljust(24) + mid)[0, max_chars]
@@ -358,28 +436,25 @@ module Tn3270
         status_text(x, text_y, line, fg, size, cw, font)
       end
 
-      # The app's own Caps Lock: a button ending at `right`. Returns its left edge.
-      def draw_caps_button(right, y, cw, size, font, text_y)
-        on = @config["caps"]
-        bw = cw * 6
+      # An on/off button in the status bar, ending at `right` (CAPS: the app's
+      # own Caps Lock; FK: the key bar). Returns its left edge.
+      def draw_toggle(hit, label, on, right, y, cw, size, font, text_y)
+        bw = cw * (label.size + 2)
         bx = right - bw
         by = y + 4
         bh = STATUS_H - 8
         if on
-          rectangle(bx, by, bw, bh) { fill rgb(CAPS_ON) }
+          @painter.fill_rect(bx, by, bw, bh, CAPS_ON)
         else
-          rectangle(bx + 0.5, by + 0.5, bw - 1, bh - 1) { stroke rgb(OFFLINE).merge(thickness: 1) }
+          @painter.stroke_rect(bx + 0.5, by + 0.5, bw - 1, bh - 1, OFFLINE, 1)
         end
-        status_text(bx + cw, text_y, "CAPS", on ? [0x1A, 0x14, 0x05] : OFFLINE, size, cw, font)
-        @status_hits[:caps] = [bx, y, bw, STATUS_H]
+        status_text(bx + cw, text_y, label, on ? [0x1A, 0x14, 0x05] : OFFLINE, size, cw, font)
+        @status_hits[hit] = [bx, y, bw, STATUS_H]
         bx
       end
 
       def status_text(x, y, str, fg, size, cw, font)
-        text(x, y, (str.size + 4) * cw) {
-          default_font family: font, size: size
-          string(str) { color rgb(fg) }
-        }
+        @painter.text(x, y, (str.size + 4) * cw, str, fg, font, size)
       end
 
       # Three bars: opens the menus when the menu bar is hidden.
@@ -389,7 +464,7 @@ module Tn3270
         bx = x + ((w - bar_w) / 2.0)
         [-0.22, 0, 0.22].each do |k|
           by = y + (h / 2.0) + (k * h) - (bar_h / 2.0)
-          rectangle(bx, by, bar_w, bar_h) { fill rgb(ICON_FG) }
+          @painter.fill_rect(bx, by, bar_w, bar_h, ICON_FG)
         end
       end
 
@@ -398,15 +473,14 @@ module Tn3270
         cx = x + (w / 2.0)
         cy = y + (h / 2.0)
         r = h * 0.27
-        if @controller.connected?
-          circle(cx, cy, r * 1.6) { fill rgb(ONLINE, 0.18) }
-          circle(cx, cy, r) { fill rgb(ONLINE) }
-        elsif @controller.connecting?
-          circle(cx, cy, r * 1.6) { fill rgb(CONNECTING, 0.18) }
-          circle(cx, cy, r) { fill rgb(CONNECTING) }
+        color = if @controller.connected? then ONLINE
+                elsif @controller.connecting? then CONNECTING
+                end
+        if color
+          @painter.fill_circle(cx, cy, r * 1.6, color, 0.18)
+          @painter.fill_circle(cx, cy, r, color)
         else
-          pen = rgb(OFFLINE).merge(thickness: [h * 0.09, 1.2].max)
-          circle(cx, cy, r * 0.9) { stroke pen }
+          @painter.stroke_circle(cx, cy, r * 0.9, OFFLINE, [h * 0.09, 1.2].max)
         end
       end
 
@@ -415,8 +489,9 @@ module Tn3270
       # Icon, menu names, window title and the minimize / maximize / close
       # buttons, across the top of the drawing area.
       def draw_title_bar(w)
+        pt = @painter
         @title_hits = []
-        rectangle(0, 0, w, TITLE_H) { fill rgb(TITLE_BG) }
+        pt.fill_rect(0, 0, w, TITLE_H, TITLE_BG)
         draw_app_icon(12, (TITLE_H - 16) / 2.0)
 
         text_y = (TITLE_H - (FontMetrics.for(UI_FONT)[:line] * UI_SIZE)) / 2.0
@@ -424,7 +499,7 @@ module Tn3270
         @menu_bar.names.each_with_index do |name, i|
           bw = FontMetrics.text_width(UI_FONT, UI_SIZE, name) + 16
           hit = [:menu, i]
-          rectangle(x, 4, bw, TITLE_H - 8) { fill rgb([0xFF, 0xFF, 0xFF], 0.10) } if @title_hover == hit || @menu_open == i
+          pt.fill_rect(x, 4, bw, TITLE_H - 8, WHITE, 0.10) if @title_hover == hit || @menu_open == i
           ui_text(x + 8, text_y, name, TITLE_FG)
           @title_hits << [x, 0, bw, TITLE_H, hit]
           x += bw
@@ -440,19 +515,15 @@ module Tn3270
           bx = buttons_x + (i * BUTTON_W)
           hover = @title_hover == [kind]
           if hover
-            bg = kind == :close ? CLOSE_HOVER : [0xFF, 0xFF, 0xFF]
-            rectangle(bx, 0, BUTTON_W, TITLE_H) { fill rgb(bg, kind == :close ? 1.0 : 0.10) }
+            kind == :close ? pt.fill_rect(bx, 0, BUTTON_W, TITLE_H, CLOSE_HOVER) : pt.fill_rect(bx, 0, BUTTON_W, TITLE_H, WHITE, 0.10)
           end
-          draw_window_glyph(kind, bx + (BUTTON_W / 2.0), TITLE_H / 2.0, hover && kind == :close ? [0xFF, 0xFF, 0xFF] : TITLE_FG)
+          draw_window_glyph(kind, bx + (BUTTON_W / 2.0), TITLE_H / 2.0, hover && kind == :close ? WHITE : TITLE_FG)
           @title_hits << [bx, 0, BUTTON_W, TITLE_H, [kind]]
         end
       end
 
       def ui_text(x, y, str, fg)
-        text(x, y, FontMetrics.text_width(UI_FONT, UI_SIZE, str) + 20) {
-          default_font family: UI_FONT, size: UI_SIZE
-          string(str) { color rgb(fg) }
-        }
+        @painter.text(x, y, FontMetrics.text_width(UI_FONT, UI_SIZE, str) + 20, str, fg, UI_FONT, UI_SIZE)
       end
 
       # A 16px version of the app icon: a tiny 3270 screen.
@@ -462,27 +533,26 @@ module Tn3270
       ].freeze
 
       def draw_app_icon(x, y)
-        rectangle(x, y, 16, 16) { fill rgb([0x24, 0x2F, 0x42]) }
-        ICON_BARS.each do |bx, by, bw, bh, c|
-          rectangle(x + bx, y + by, bw, bh) { fill rgb(c) }
-        end
+        @painter.fill_rect(x, y, 16, 16, [0x24, 0x2F, 0x42])
+        ICON_BARS.each { |bx, by, bw, bh, c| @painter.fill_rect(x + bx, y + by, bw, bh, c) }
       end
 
       def draw_window_glyph(kind, cx, cy, fg)
-        pen = rgb(fg).merge(thickness: 1)
+        pt = @painter
         case kind
         when :minimize
-          rectangle(cx - 5, cy, 10, 1) { fill rgb(fg) }
+          pt.fill_rect(cx - 5, cy, 10, 1, fg)
         when :maximize
           if @title_bar.maximized?
-            rectangle(cx - 3.5, cy - 5.5, 8, 8) { stroke pen }
-            rectangle(cx - 5.5, cy - 3.5, 8, 8) { fill rgb(TITLE_BG); stroke pen }
+            pt.stroke_rect(cx - 3.5, cy - 5.5, 8, 8, fg)
+            pt.fill_rect(cx - 5.5, cy - 3.5, 8, 8, TITLE_BG)
+            pt.stroke_rect(cx - 5.5, cy - 3.5, 8, 8, fg)
           else
-            rectangle(cx - 4.5, cy - 4.5, 9, 9) { stroke pen }
+            pt.stroke_rect(cx - 4.5, cy - 4.5, 9, 9, fg)
           end
         when :close
-          polyline(cx - 5, cy - 5, cx + 5, cy + 5) { stroke pen }
-          polyline(cx + 5, cy - 5, cx - 5, cy + 5) { stroke pen }
+          pt.polyline([cx - 5, cy - 5, cx + 5, cy + 5], fg)
+          pt.polyline([cx + 5, cy - 5, cx - 5, cy + 5], fg)
         end
       end
 
@@ -502,12 +572,113 @@ module Tn3270
 
       def mouse_move(event)
         title_hover(title_hit(event)) if custom_title?
+        hover_status(event)
+      end
+
+      # ---- status bar tooltips -----------------------------------------------------
+      # libui has no tooltips for a drawing area, so they are drawn here: after
+      # the pointer rests on a status bar button for TIP_DELAY seconds.
+
+      TIP_DELAY = 0.5
+      TIP_BG = [0x24, 0x2D, 0x3B].freeze
+      TIP_BORDER = [0x4A, 0x58, 0x6E].freeze
+
+      def hover_status(event)
+        hit = status_hit(event) || (snippet_bar_shown? && !@picker ? snippet_hover(event) : nil)
+        return if hit == @hover
+
+        was_shown = @tip_shown
+        @hover = hit
+        @hover_since = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        @tip_shown = false
+        redraw if was_shown
+      end
+
+      # Hides the tooltip (the pointer left, or something was clicked).
+      def hide_tooltip
+        was_shown = @tip_shown
+        @hover = nil
+        @tip_shown = false
+        redraw if was_shown
+      end
+
+      # Called by the main-thread timer: shows the tooltip once the pause is up.
+      def tooltip_tick
+        return if @tip_shown || !@hover
+        return if Process.clock_gettime(Process::CLOCK_MONOTONIC) - @hover_since < TIP_DELAY
+
+        @tip_shown = true
+        redraw
+      end
+
+      # What a status bar button does, as lines of text (the first is the heading).
+      def tooltip_lines(hit)
+        case hit
+        when :caps
+          ["CAPS: capital letters (this app only)",
+           "Types letters in capitals here; your keyboard's Caps Lock is not touched.",
+           "Click to turn it #{@config['caps'] ? 'off' : 'on'}."]
+        when :auto_enter
+          ["ENTER: keep pressing Enter to watch a job",
+           "Presses Enter #{@controller.auto_enter_seconds.round(1)}s after each answer from the host, over and over.",
+           "Click to #{@controller.auto_enter? ? 'stop' : 'start'}. It stops by itself if the connection ends."]
+        when :fk
+          ["FK: function key buttons",
+           "Shows a bar of buttons: PF1-PF24, Reset, Clear, Attn, New Line and SysReq.",
+           "Click to #{keybar_shown? ? 'hide' : 'show'} it."]
+        when :connection
+          ["Connection: green = connected, amber = connecting, grey = not connected",
+           "Click to #{@controller.connected? || @controller.connecting? ? 'disconnect' : 'connect'}."]
+        when :menu
+          ["Menus", "Click to open the menus."]
+        when :snip
+          ["SNIP: snippets",
+           "Shows a list of text and key sequences you can type with a double-click.",
+           "#{keys_label('snippet_picker')} finds one by name without the list. Click to #{snippet_bar_shown? ? 'hide' : 'show'} it."]
+        when Array # a snippet in the sidebar: its text
+          item = panel_items[hit[1]]
+          item && [item.name, *item.text.lines.map(&:rstrip).first(10), ("..." if item.text.lines.size > 10)].compact
+        end
+      end
+
+      # Where the thing the tooltip describes is: [x, y, w, h].
+      def tooltip_box(hit)
+        return @status_hits[hit] unless hit.is_a?(Array)
+
+        found = (@snip_hits || []).find { |*, h| h == [:row, hit[1]] }
+        found && found.first(4)
+      end
+
+      # The tooltip box: above a status bar button, or left of a snippet.
+      def draw_tooltip(w, h)
+        hit = @hover
+        lines = tooltip_lines(hit)
+        box = tooltip_box(hit)
+        return unless lines && box
+
+        pad = 8
+        line_h = FontMetrics.for(UI_FONT)[:line] * UI_SIZE
+        widths = lines.map { |t| FontMetrics.text_width(UI_FONT, UI_SIZE, t) }
+        bw = widths.max + (2 * pad) + 6
+        bh = (lines.size * line_h) + (2 * pad)
+        if hit.is_a?(Array) # a snippet row: to the left of the sidebar
+          bx = [box[0] - bw - 8, 4].max
+          by = box[1].clamp(title_h + 4, [h - STATUS_H - bh - 6, title_h + 4].max)
+        else
+          bx = (box[0] + (box[2] / 2.0) - (bw / 2.0)).clamp(4, [w - bw - 4, 4].max)
+          by = h - STATUS_H - bh - 6
+        end
+        @painter.fill_rect(bx, by, bw, bh, TIP_BG)
+        @painter.stroke_rect(bx + 0.5, by + 0.5, bw - 1, bh - 1, TIP_BORDER, 1)
+        lines.each_with_index do |text, i|
+          @painter.text(bx + pad, by + pad + (i * line_h), widths[i] + 20, text, i.zero? ? WHITE : TITLE_FG, UI_FONT, UI_SIZE, bold: i.zero?)
+        end
       end
 
       # Menus open on press; window buttons act on release, like Windows.
       def title_mouse_down(event, hit)
         case hit[0]
-        when :menu then Glimmer::LibUI.queue_main { open_title_menu(hit[1]) }
+        when :menu then UI.queue_main { open_title_menu(hit[1]) }
         when :caption
           if event[:count].to_i >= 2
             @title_bar.toggle_maximize
@@ -516,9 +687,9 @@ module Tn3270
                    elsif event[:x] > event[:area_width] - 8 then :top_right
                    else :top
                    end
-            Glimmer::LibUI.queue_main { @title_bar.begin_drag(edge) }
+            UI.queue_main { @title_bar.begin_drag(edge) }
           else
-            Glimmer::LibUI.queue_main { @title_bar.begin_drag(:caption) }
+            UI.queue_main { @title_bar.begin_drag(:caption) }
           end
         else
           @title_pressed = hit
@@ -543,10 +714,11 @@ module Tn3270
 
         @menu_open = index
         redraw
-        sx, sy = @title_bar.to_screen(@area, x, TITLE_H)
+        sx, sy = @title_bar.to_screen(@area.control, x, TITLE_H)
         @menu_bar.popup_submenu(index, sx, sy)
         @menu_open = nil
         @title_hover = nil
+        @reshape = true
         redraw
       end
 
@@ -558,12 +730,15 @@ module Tn3270
         return if @title == title
 
         @title = title
-        @window.title = title
+        UI.window_set_title(@window, title)
       end
 
       # ---- keyboard ------------------------------------------------------------
 
       def key(event)
+        return picker_key(event) if @picker
+        return true if @snip_focus && panel_key(event)
+
         tap = @tap.feed(event)
         return perform(Keymap.action_result(@bindings[tap])) if tap && @bindings[tap]
 
@@ -579,6 +754,9 @@ module Tn3270
         when :find then show_find
         when :crosshair then set_crosshair(!@config["crosshair"])
         when :caps then set_caps(!@config["caps"])
+        when :snippet_picker then open_picker
+        when :snippet_bar then toggle_snippet_bar(!snippet_bar_shown?)
+        when :snippet then run_snippet_number(action[1])
         when :copy then copy
         when :paste then paste
         when :key
@@ -591,7 +769,7 @@ module Tn3270
         true
       end
 
-      # Letters follow the keyboard's Caps Lock (LibUI reports keys without it)
+      # Letters follow the keyboard's Caps Lock (libui reports keys without it)
       # and, on top of that, the app's own Caps Lock.
       def apply_caps(char)
         return char unless char.match?(/\A[[:alpha:]]\z/)
@@ -607,6 +785,17 @@ module Tn3270
 
       # ---- mouse: click moves the cursor, drag selects a block ------------------
 
+      # libui reports every mouse event to one handler.
+      def mouse(event)
+        if event[:down] == 1 then mouse_down(event)
+        elsif event[:down] == 3 then right_click(event)
+        elsif event[:up] == 1 then mouse_up(event)
+        else
+          mouse_move(event)
+          mouse_drag(event) if event[:held].to_i.anybits?(1)
+        end
+      end
+
       def cell_at(event, clamp: false)
         rows, cols = grid_size
         _, cw, ch, ox, oy = metrics(event[:area_width], event[:area_height])
@@ -619,11 +808,16 @@ module Tn3270
       end
 
       def mouse_down(event)
-        return unless event[:down] == 1
-
+        hide_tooltip
         if (hit = title_hit(event))
           title_mouse_down(event, hit)
           return
+        end
+        return if snippet_mouse_down(event)
+
+        if @snip_focus
+          @snip_focus = false
+          redraw
         end
         return unless @controller.snapshot
 
@@ -631,8 +825,19 @@ module Tn3270
         clear_selection
       end
 
+      # Right-click with a selection: copy it, clear it, and put the cursor
+      # where the pointer is. Without a selection, nothing happens.
+      def right_click(event)
+        return unless @selection && @controller.snapshot
+
+        copy
+        cell = cell_at(event)
+        clear_selection
+        @controller.move_to(*cell) if cell
+      end
+
       def mouse_drag(event)
-        return unless @drag_anchor && (event[:held].to_i & 1) == 1
+        return unless @drag_anchor
 
         cur = cell_at(event, clamp: true)
         return if @selection.nil? && cur == @drag_anchor
@@ -642,7 +847,6 @@ module Tn3270
       end
 
       def mouse_up(event)
-        return unless event[:up] == 1
         return title_mouse_up(event) if @title_pressed
 
         anchor = @drag_anchor
@@ -653,10 +857,13 @@ module Tn3270
           @controller.move_to(*anchor) if @controller.snapshot
         elsif (hit = status_hit(event))
           # Run after this mouse event returns; the popup menu has its own loop.
-          Glimmer::LibUI.queue_main do
+          UI.queue_main do
             case hit
             when :menu then @menu_bar.popup
             when :caps then set_caps(!@config["caps"])
+            when :fk then toggle_keybar(!keybar_shown?)
+            when :auto_enter then set_auto_enter(!@controller.auto_enter?)
+            when :snip then toggle_snippet_bar(!snippet_bar_shown?)
             else toggle_connection
             end
           end
@@ -713,20 +920,109 @@ module Tn3270
 
       # ---- view options --------------------------------------------------------
 
+      def keybar_shown? = Ui.visible?(@keybar)
+
+      # Shows or hides the key bar (View menu or the FK button) and remembers it.
       def toggle_keybar(on)
-        @keybar.visible = on
+        on ? Ui.show(@keybar) : Ui.hide(@keybar)
+        UI.menu_item_set_checked(@keybar_item, Ui.flag(on))
+        set_option("key_bar", on)
+        @reshape = true
+        redraw
+      end
+
+      # ---- window shape ----------------------------------------------------------
+
+      # Height of the parts of the drawing area that aren't the screen grid
+      # (title bar, margins, status bar), in drawing units.
+      def chrome_h = title_h + 4 + STATUS_H + 4
+
+      # Width / height of the screen grid at any font size.
+      def grid_ratio
+        rows, cols = grid_size
+        fm = FontMetrics.for(@config["font"])
+        (cols * fm[:advance]) / (rows * fm[:line])
+      end
+
+      # [extra window width, extra window height, pixels per drawing unit]:
+      # what the window adds around the drawing area (borders, menu bar, key
+      # bar), measured now, and the display scaling.
+      def window_extras
+        return nil unless @area_size
+
+        win_w, win_h = Win32.window_size(@window)
+        area_w, area_h = Win32.client_size(@area.control)
+        return nil unless area_w.positive? && @area_size[0].positive?
+
+        [win_w - area_w, win_h - area_h, area_w / @area_size[0].to_f]
+      end
+
+      # Outer window height that fits the screen exactly at a given outer width (and back).
+      def shaped_height(width, extras)
+        extra_w, extra_h, scale = extras
+        ((width - extra_w - (panel_w * scale)) / grid_ratio) + (chrome_h * scale) + extra_h
+      end
+
+      def shaped_width(height, extras)
+        extra_w, extra_h, scale = extras
+        ((height - extra_h - (chrome_h * scale)) * grid_ratio) + extra_w + (panel_w * scale)
+      end
+
+      WMSZ_TOP = [3, 4, 5].freeze # top, top-left, top-right
+      WMSZ_TOP_BOTTOM = [3, 6].freeze
+
+      # While the user drags an edge: keep the window the shape of the screen.
+      # Dragging the top or bottom edge sets the width; any other edge or corner
+      # sets the height.
+      def shaped_rect(edge, rect)
+        return nil unless @config["lock_ratio"] && (extras = window_extras)
+
+        left, top, right, bottom = rect
+        max_w, max_h = Win32.max_window_size
+        if WMSZ_TOP_BOTTOM.include?(edge)
+          height = bottom - top
+          width = shaped_width(height, extras)
+          # Too wide for Windows to allow: the width decides instead.
+          height = shaped_height(width = max_w, extras) if width > max_w
+          right = left + width
+          WMSZ_TOP.include?(edge) ? top = bottom - height : bottom = top + height
+        else
+          width = right - left
+          height = shaped_height(width, extras)
+          # Too tall for Windows to allow: the height decides instead.
+          width = shaped_width(height = max_h, extras) if height > max_h
+          [1, 4, 7].include?(edge) ? left = right - width : right = left + width # left-side edges
+          WMSZ_TOP.include?(edge) ? top = bottom - height : bottom = top + height
+        end
+        [left, top, right, bottom]
+      end
+
+      # Snaps the window's height to the screen's shape (not when maximized).
+      def fit_window_to_screen
+        @shaped_for = grid_size
+        return unless @config["lock_ratio"] && Win32.available? && !Win32.maximized?(@window)
+        return unless (extras = window_extras)
+
+        width, = Win32.window_size(@window)
+        height = shaped_height(width, extras)
+        # Keep it on the screen: too tall means narrower, and move it up if needed.
+        area_x, area_y, area_w, area_h = Win32.work_area(@window)
+        height = shaped_height(width = area_w, extras) if width > area_w
+        width = shaped_width(height = area_h, extras) if height > area_h
+        left, top = Win32.window_position(@window)
+        left = left.clamp(area_x, area_x + area_w - width)
+        top = top.clamp(area_y, area_y + area_h - height)
+        Win32.place(@window, left, top, width, height)
+      end
+
+      def set_lock_ratio(on)
+        set_option("lock_ratio", on)
+        @reshape = true
       end
 
       def set_underline(on)
         @config["underline_input_fields"] = on
         @config.save
-        redraw
-      end
-
-      def set_menu_hidden(on)
-        @config["hide_menu_bar"] = on
-        @config.save
-        @menu_bar&.visible = !menu_bar_hidden?
         redraw
       end
 
@@ -739,13 +1035,13 @@ module Tn3270
       # other programs are unaffected.
       def set_caps(on)
         set_option("caps", on)
-        @caps_item.checked = on if @caps_item
+        UI.menu_item_set_checked(@caps_item, Ui.flag(on))
         redraw
       end
 
       def set_crosshair(on)
         set_option("crosshair", on)
-        @crosshair_item.checked = on if @crosshair_item
+        UI.menu_item_set_checked(@crosshair_item, Ui.flag(on))
         redraw
       end
 
@@ -818,15 +1114,6 @@ module Tn3270
         redraw
       end
 
-      def set_custom_title(on)
-        @config["custom_title_bar"] = on
-        @config.save
-        on ? @title_bar&.install : @title_bar&.uninstall
-        @menu_bar&.visible = !menu_bar_hidden?
-        @title_hover = nil
-        redraw
-      end
-
       # ---- other windows -------------------------------------------------------
 
       def show_history
@@ -845,8 +1132,9 @@ module Tn3270
       end
 
       def connections_dialog
-        ConnectionsDialog.new(@config, on_connect: ->(conn) { connect_to(conn) },
-                                       on_save: -> { refresh_recent_menu }).show
+        @connections = ConnectionsDialog.new(@config, on_connect: ->(conn) { connect_to(conn) },
+                                                      on_save: -> { refresh_recent_menu })
+        @connections.show
       end
 
       # ---- saved sessions in the Session menu ------------------------------------
@@ -890,17 +1178,22 @@ module Tn3270
 
         @recent_list = recent_connections.first(RECENT_SLOTS)
         labels = @recent_list.each_with_index.map do |c, i|
-          "&#{i + 1}  #{c['name'].to_s.gsub('&', '&&')}\t#{Config.connect_string(c)}"
+          "&#{i + 1}  #{c['name'].to_s.gsub('&', '&&')}\t#{Config.display_string(c)}"
         end
         @menu_bar.set_slots(labels, empty: "No saved sessions")
       end
 
       def keys_dialog
-        KeysDialog.new(@config, on_change: -> { @bindings = Keymap.bindings(@config["keys"]); redraw }).show
+        @keys = KeysDialog.new(@config, on_change: -> { @bindings = Keymap.bindings(@config["keys"]); redraw })
+        @keys.show
       end
 
       def font_dialog
-        FontDialog.new(@config, on_change: -> { redraw }).show
+        @font = FontDialog.new(@config, on_change: lambda {
+          @reshape = true
+          redraw
+        })
+        @font.show
       end
 
       def keyboard_help

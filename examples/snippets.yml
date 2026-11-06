@@ -1,0 +1,36 @@
+# Example snippets. Add this file (or a copy on a shared drive) in ruby3270
+# under Snippets sidebar > Files > Add File... Each entry has a name and the
+# text to type. Keys and placeholders go in braces:
+#   {Enter} {PF3} {Tab} {Clear} {Reset}...  press a key (Enter/PF/PA wait for the host)
+#   {wait:READY}                            wait until that text is on the screen
+#   {ask:Job name}                          ask for a value when the snippet runs
+#   {date} {date:%y%m%d} {time} {user} {clipboard}
+# A new line moves to the next input field, unless the line ended with a key.
+
+# ---- try these against the fake host (ruby bin/fake_host) -----------------------
+- name: "Fake host: sign on"
+  text: |-
+    user01
+    secret{Enter}{wait:MAIN MENU}
+- name: "Fake host: key tester, type a message"
+  text: "1{Enter}{wait:KEY TESTER}{ask:Message}{Enter}"
+
+# ---- ISPF / TSO / SDSF ----------------------------------------------------------
+- name: "ISPF: data set list (3.4)"
+  text: "=3.4{Enter}{wait:Data Set List Utility}{ask:Data set level}{Enter}"
+- name: "ISPF: edit a member"
+  text: "=2{Enter}{wait:Edit Entry Panel}{ask:Data set (with member)}{Enter}"
+- name: "SDSF: my jobs on the status panel"
+  text: "=S.ST{Enter}{wait:SDSF}PREFIX {user}*{Enter}"
+- name: "TSO: list my data sets"
+  text: "LISTCAT LEVEL({user}){Enter}"
+- name: "TSO: submit a job"
+  text: "SUBMIT '{ask:Data set (member)}'{Enter}"
+
+# ---- JCL --------------------------------------------------------------------------
+# Typed line by line into ISPF edit lines: one line per input field.
+- name: "JCL: job card"
+  text: |-
+    //{ask:Job name} JOB (ACCT),'{user}',CLASS=A,MSGCLASS=X,
+    //         NOTIFY=&SYSUID
+    //* Written {date} {time}
