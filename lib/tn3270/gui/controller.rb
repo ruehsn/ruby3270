@@ -86,7 +86,9 @@ module Tn3270
         watch_connect(conn)
         notify
         enqueue do
+          stop_startup_script
           @session.disconnect if connected?
+          @script_wants_port = !StartupScript.path_for(conn).nil? # the script attaches through it
           rows = conn["rows"].to_i
           cols = conn["cols"].to_i
           resize = rows.positive? && cols.positive? && [rows, cols] != [@rows, @cols]
@@ -97,6 +99,13 @@ module Tn3270
           @session.connect(Config.connect_string(conn), wait: false)
           @script_conn = StartupScript.path_for(conn) ? conn : nil
         end
+      end
+
+      # The session's saved settings changed (Session > Edit Session): the
+      # tab shows the new name now; the rest applies at the next connect.
+      def retarget(conn)
+        @last_target = conn if @last_target
+        notify
       end
 
       # Session > Allow Scripts to Attach was switched. Applies now when not
@@ -117,6 +126,7 @@ module Tn3270
         @connecting_since = nil
         enqueue do
           @script_conn = nil
+          stop_startup_script
           @typeahead.clear
           @aid_sent_at = nil
           @session.disconnect
@@ -277,6 +287,7 @@ module Tn3270
         @connect_attempt = nil
         @queue << :stop
         @worker.join(3)
+        stop_startup_script
         @session&.close
       rescue StandardError
         nil
@@ -325,8 +336,9 @@ module Tn3270
         session # an engine too old for the setting: carry on as before
       end
 
-      # The port scripts attach to, when Session > Allow Scripts to Attach is on.
-      def wanted_port = @config["allow_attach"] ? @config["script_port"].to_i : nil
+      # The port scripts attach to, when Session > Allow Scripts to Attach is
+      # on or the connection has a startup script (it attaches through it).
+      def wanted_port = @config["allow_attach"] || @script_wants_port ? @config["script_port"].to_i : nil
 
       # The first free port from the configured one, so several windows can
       # each be attached to; nil when attaching is off or no port is free.
@@ -464,29 +476,43 @@ module Tn3270
         @message = "AUTO ENTER every #{auto_enter_seconds.round(1)}s - click ENTER again to stop" if @auto_enter && @message.nil?
       end
 
-      # Runs the startup script once the connection is up. The window redraws
-      # after each thing it does; its `status` text, or its error, stays in
-      # the status bar afterwards.
+      # Starts the startup script once the connection is up, in its own
+      # process: the window stays usable while it works. Each line it prints,
+      # or its error, shows in the status bar.
       def run_startup_script
         return unless @script_conn && connected?
 
         conn = @script_conn
         @script_conn = nil
         path = StartupScript.path_for(conn)
-        note = nil
-        @message = "Running startup script #{File.basename(path)}..."
+        unless @attach_port
+          @message = "Startup script not run: no free script port from #{@config['script_port']}"
+          return notify
+        end
+        running = @message = "Running startup script #{File.basename(path)}..."
         notify
-        error = StartupScript.run(path, @session, conn,
-                                  after: -> { refresh },
-                                  on_status: lambda { |text|
-                                    note = @message = text
-                                    notify
-                                  })
-        @message = error || note
-        @signature = nil
-        refresh
-        notify
+        on_status = lambda do |text|
+          @message = text
+          notify
+        end
+        on_exit = lambda do |error|
+          @message = error || (@message == running ? nil : @message) # a quiet script leaves no message
+          notify
+        end
+        @startup_script = StartupScript.start(path, conn, @attach_port, on_status: on_status, on_exit: on_exit)
       end
+
+      def stop_startup_script
+        StartupScript.stop(@startup_script)
+        @startup_script = nil
+      end
+
+      public
+
+      # True while this tab's startup script is still running.
+      def startup_script_running? = @startup_script&.alive? || false
+
+      private
 
       def handle(job)
         if job.input && @config["typeahead"] && (@typeahead.any? || host_busy?)

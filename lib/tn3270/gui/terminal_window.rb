@@ -83,8 +83,6 @@ module Tn3270
           @menu_bar = Win32::MenuBar.new(@window)
           @title_bar = Win32::TitleBar.new(@window)
           @title_bar.install if @config["custom_title_bar"] && @menu_bar.usable?
-          @menu_bar.reserve_slots(0, Program::RECENT_FIRST, Program::RECENT_SLOTS)
-          refresh_recent_menu
         end
         @menu_bar.visible = false if menu_bar_hidden?
         @sizing = Win32::Sizing.new(@window) { |edge, rect| shaped_rect(edge, rect) } if Win32.available?
@@ -248,16 +246,43 @@ module Tn3270
         src && src.controller.last_target && @program.open_tab?(src) ? src : nil
       end
 
+      # Rename Tab (or a double-click on it): the tab's name turns into a text
+      # box right there. Enter keeps it, Esc cancels, a click elsewhere keeps
+      # it. An empty name goes back to the session's name.
       def rename_tab(tab = @tab)
-        return unless tab
+        return unless tab && @tabs.include?(tab)
 
-        @rename_dialog = TextDialog.new("Rename Tab", "Name (empty: the session's name)", tab.custom_title || tab.title,
-                                        on_ok: lambda { |text|
-                                          tab.custom_title = text
-                                          update_title(@controller.snapshot) if tab.equal?(@tab)
-                                          redraw
-                                        })
-        @rename_dialog.show
+        select_tab(tab)
+        @tab_edit = { tab: tab, text: +tab.title, all: true } # all: the whole name is selected
+        redraw
+      end
+
+      def tab_edit_key(event)
+        edit = @tab_edit
+        case text_box_key(event)
+        when :escape then @tab_edit = nil
+        when :enter then finish_tab_edit
+        when :backspace
+          edit[:all] ? edit[:text] = +"" : edit[:text].chop!
+          edit[:all] = false
+        when Array
+          step = text_box_key(event)
+          edit[:all] ? edit[:text] = +step[1] : edit[:text] << step[1]
+          edit[:all] = false
+        end
+        redraw
+        true
+      end
+
+      # Keeps the typed name (unless it's unchanged).
+      def finish_tab_edit
+        edit = @tab_edit or return
+        @tab_edit = nil
+        tab = edit[:tab]
+        text = edit[:text].strip
+        tab.custom_title = text unless text == tab.title
+        update_title(@controller.snapshot)
+        redraw
       end
 
       # Closes a tab and ends its session. The last tab closes the window.
@@ -326,6 +351,7 @@ module Tn3270
       def draw_tabs(x0, x1, top, h)
         @strip = [x0, x1, top, top + h]
         @tab_hits = []
+        @tab_edit = nil if @tab_edit && !@tabs.include?(@tab_edit[:tab]) # moved or closed meanwhile
         width, lefts = TabStrip.layout(@tabs.size, x0, x1)
         dragged = @program.strip_drag(self)
         @tabs.each_with_index do |tab, i|
@@ -357,6 +383,11 @@ module Tn3270
         cy = y + (th / 2.0)
         color ? pt.fill_circle(x + 13, cy, 3.5, color) : pt.stroke_circle(x + 13, cy, 3.2, OFFLINE, 1.2)
         text_y = y + ((th - ui_line_h) / 2.0)
+        if @tab_edit && @tab_edit[:tab].equal?(tab)
+          @tab_hits << [x, y, width, th, [:tab, index]]
+          return draw_tab_edit(x + 21, y + 4, [width - 21 - 6, 40].max, th - 8, text_y)
+        end
+
         ui_text(x + 23, text_y, fit_text(tab.title, width - 23 - 26), active ? WHITE : TITLE_FG) if width >= 60
         if (active || hover) && width >= 60
           cx = x + width - 15
@@ -368,6 +399,22 @@ module Tn3270
           @tab_hits << [cx - 8, cy - 8, 16, 16, [:tab_close, index]]
         end
         @tab_hits << [x, y, width, th, [:tab, index]]
+      end
+
+      # The name being edited, in a box over the tab's title: the whole name
+      # highlighted until you type, then a caret at the end. A long name
+      # shows its end, where you're typing.
+      def draw_tab_edit(x, y, w, h, text_y)
+        pt = @painter
+        pt.fill_rect(x, y, w, h, SnippetPanel::FIELD_BG)
+        pt.stroke_rect(x + 0.5, y + 0.5, w - 1, h - 1, SELECTION, 1)
+        shown = @tab_edit[:text].dup
+        width = ->(s) { FontMetrics.text_width(UI_FONT, UI_SIZE, s) }
+        shown = shown[1..] while !shown.empty? && width.call(shown) > w - 14
+        tw = width.call(shown)
+        pt.fill_rect(x + 5, text_y, tw + 2, ui_line_h, SELECTION, 0.55) if @tab_edit[:all] && !shown.empty?
+        ui_text(x + 6, text_y, shown, WHITE)
+        pt.fill_rect(x + 7 + tw, text_y + 1, 1, ui_line_h - 2, TITLE_FG) unless @tab_edit[:all]
       end
 
       def draw_new_tab_button(x, top, h)
@@ -388,6 +435,11 @@ module Tn3270
         case hit[0]
         when :tab
           tab = @tabs[hit[1]]
+          if @tab_edit && @tab_edit[:tab].equal?(tab)
+            @tab_edit[:all] = false # a click in the name being edited: just stop selecting it all
+            return redraw
+          end
+          finish_tab_edit
           select_tab(tab)
           # The release may come anywhere (even over another window): it
           # mustn't count as a click on whatever is under it here.
@@ -433,7 +485,7 @@ module Tn3270
       # Right-click on a tab.
       def tab_menu(tab)
         many = @tabs.size > 1
-        items = ["New Tab", ["Duplicate Tab", !tab.controller.last_target.nil?], "Rename Tab...",
+        items = ["New Tab", ["Duplicate Tab", !tab.controller.last_target.nil?], "Rename Tab",
                  ["Move Tab to New Window", many], nil, "Close Tab", ["Close Other Tabs", many]]
         case Win32.choose(@area.control, items)
         when 0 then new_tab
@@ -1066,6 +1118,7 @@ module Tn3270
       # ---- keyboard ------------------------------------------------------------
 
       def key(event)
+        return tab_edit_key(event) if @tab_edit
         return picker_key(event) if @picker
         return true if @snip_focus && panel_key(event)
 
@@ -1150,6 +1203,8 @@ module Tn3270
         hide_tooltip
         hit = tab_hit(event)
         return tab_mouse_down(event, hit) if hit
+
+        finish_tab_edit # a click anywhere else keeps the new name
 
         hit = start_page? && hit_at(@start_hits, event)
         return start_page_click(hit) if hit
@@ -1494,9 +1549,33 @@ module Tn3270
         end
       end
 
+      # Session > Edit Session: the connections dialog, open on this tab's
+      # session. Save keeps the changes (the tab follows a new name); Connect
+      # reconnects this tab with them.
+      def edit_session
+        tab = @tab
+        target = tab&.controller&.last_target
+        return connections_dialog unless target
+
+        @connections = ConnectionsDialog.new(
+          @config, select: target, title: "Edit Session",
+                   on_connect: lambda { |conn|
+                     next open_session(conn) unless @tabs.include?(tab)
+
+                     select_tab(tab)
+                     connect_to(conn)
+                   },
+                   on_save: lambda {
+                     (conn = @connections.opened) && @tabs.include?(tab) && tab.controller.retarget(conn)
+                     @program.for_all(:redraw) # tabs and the window title show the new name
+                   }
+        )
+        @connections.show
+      end
+
       def connections_dialog
         @connections = ConnectionsDialog.new(@config, on_connect: ->(conn) { open_session(conn) },
-                                                      on_save: -> { @program.refresh_recent_menu })
+                                                      on_save: -> { @program.for_all(:redraw) }) # new tab pages list them
         @connections.show
       end
 
@@ -1534,7 +1613,7 @@ module Tn3270
         @config.save
         merge_snippets(snippets)
         @program.reload_bindings
-        @program.refresh_recent_menu
+        @program.for_all(:redraw)
         msg_box("Import Settings", "Imported. Some options (view and menu settings) show after you restart ruby3270.")
       rescue ArgumentError, Psych::Exception, SystemCallError => e
         msg_box("Import Settings", "Couldn't import #{File.basename(path.to_s)}:\n#{e.message}")
@@ -1545,7 +1624,7 @@ module Tn3270
         snippets_changed
       end
 
-      # ---- saved sessions in the Session menu ------------------------------------
+      # ---- opening saved sessions ------------------------------------------------
 
       public
 
@@ -1571,19 +1650,14 @@ module Tn3270
         saved ? connect_to(target) : @controller.connect(target)
       end
 
-      # Connects this tab to a saved connection and moves it to the top of the menu.
+      # Connects this tab to a saved connection and moves it to the top of the
+      # new tab page's list.
       def connect_to(conn)
         name = conn["name"].to_s
         @config["last_connection"] = name
         @config["recent"] = ([name] + Array(@config["recent"]) - [""]).uniq.first(50)
         @config.save
-        @program.refresh_recent_menu
         @controller.connect(conn)
-      end
-
-      def connect_recent(index)
-        conn = @recent_list && @recent_list[index]
-        conn ? open_session(conn) : connections_dialog
       end
 
       # Saved connections, most recently used first.
@@ -1592,16 +1666,6 @@ module Tn3270
         @config.connections.each_with_index
                .sort_by { |c, i| [order.index(c["name"]) || order.size, i] }
                .map(&:first)
-      end
-
-      def refresh_recent_menu
-        return unless @menu_bar
-
-        @recent_list = recent_connections.first(Program::RECENT_SLOTS)
-        labels = @recent_list.each_with_index.map do |c, i|
-          "&#{i + 1}  #{c['name'].to_s.gsub('&', '&&')}\t#{Config.display_string(c)}"
-        end
-        @menu_bar.set_slots(labels, empty: "No saved sessions")
       end
 
       def keys_dialog

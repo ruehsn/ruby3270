@@ -33,23 +33,34 @@ module Tn3270
       SIZE_LABELS = Config::SIZES.map(&:first) + ["Custom"]
       MAX_CELLS = 16_383 # 3270 buffer addresses are 14 bits
 
-      def initialize(config, on_connect:, on_save: nil)
+      # select: a connection to open the dialog on (Session > Edit Session);
+      # one that isn't saved yet (typed as host:port) is added to the list.
+      def initialize(config, on_connect:, on_save: nil, select: nil, title: "Connections")
         @config = config
         @on_connect = on_connect
         @on_save = on_save
+        @title = title
         @list = config.connections.map { |c| Config::DEFAULT_CONNECTION.merge(c) }
         @list = [Config::DEFAULT_CONNECTION.dup] if @list.empty?
-        @index = 0
+        @index = select ? index_for(select) : 0
+        @opened = select && @index
       end
 
+      # The connection on show (after Save: as saved).
+      def current = @list[@index]
+
+      # The connection the dialog opened on (`select:`), as edited; nil once deleted.
+      def opened = @opened && @list[@opened]
+
       def show
-        @win = Ui.window("Connections", 560, 540)
+        @win = Ui.window(@title, 560, 540)
         UI.window_on_closing(@win) { 1 }
         main = Ui.vbox
 
         top = Ui.add(main, Ui.hbox)
         @combo = Ui.add(top, Ui.combobox(names) { |i| pick(i) }, stretchy: true)
         Ui.add(top, Ui.button("New") { add })
+        Ui.add(top, Ui.button("Duplicate") { duplicate })
         Ui.add(top, Ui.button("Delete") { delete })
 
         form = Ui.form
@@ -67,8 +78,8 @@ module Tn3270
         Ui.add(script_row, Ui.button("Browse...") { browse_script })
         Ui.add(script_row, Ui.button("Clear") { UI.entry_set_text(@script, "") })
         Ui.form_row(form, "Startup script", script_row)
-        Ui.form_row(form, "", Ui.label("A Ruby file run each time this connection comes up, e.g. to log on.\n" \
-                                       "See examples/startup_script.rb."))
+        Ui.form_row(form, "", Ui.label("Runs in the background each time this connection comes up, e.g. to log on.\n" \
+                                       "Ruby (.rb), PowerShell, batch, Python... See examples/startup_script.rb."))
         Ui.add(main, Ui.group("Connection", form))
 
         engine = Ui.vbox
@@ -86,6 +97,7 @@ module Tn3270
         Ui.add(buttons, Ui.button("Connect") { connect })
         Ui.add(buttons, Ui.button("Close") { close_window(@win) })
         UI.window_set_child(@win, main)
+        UI.combobox_set_selected(@combo, @index)
         load_form
         show_window(@win)
       end
@@ -93,6 +105,16 @@ module Tn3270
       private
 
       attr_reader :config
+
+      def index_for(conn)
+        conn = Config::DEFAULT_CONNECTION.merge(conn)
+        same_host = ->(c) { c["host"] == conn["host"] && c["port"].to_i == conn["port"].to_i && c["lu"].to_s == conn["lu"].to_s }
+        found = @list.index(conn) || @list.index { |c| c["name"] == conn["name"] } || @list.index(&same_host)
+        return found if found
+
+        @list << conn.merge("name" => conn["name"].to_s.empty? ? Config.display_string(conn) : conn["name"])
+        @list.size - 1
+      end
 
       def names = @list.map { |c| c["name"].to_s.empty? ? Config.display_string(c) : c["name"] }
 
@@ -124,7 +146,34 @@ module Tn3270
         load_form
       end
 
+      # A copy of the connection on show, named "Name (2)", "Name (3)"...
+      # Not saved until Save.
+      def duplicate
+        read_form
+        copy = @list[@index].merge("name" => self.class.copy_name(@list[@index]["name"], names))
+        @list << copy
+        @index = @list.size - 1
+        refresh_combo
+        load_form
+        UI.label_set_text(@error, "Copied. Change what you need, then Save.")
+      end
+
+      public
+
+      # "Prod" -> "Prod (2)", or the next number no other connection uses.
+      def self.copy_name(name, taken)
+        base = name.to_s.sub(/ \(\d+\)\z/, "")
+        base = "Connection" if base.strip.empty?
+        n = 2
+        n += 1 while taken.include?("#{base} (#{n})")
+        "#{base} (#{n})"
+      end
+
+      private
+
       def delete
+        @opened = nil if @opened == @index
+        @opened -= 1 if @opened && @opened > @index
         @list.delete_at(@index)
         @list << Config::DEFAULT_CONNECTION.dup if @list.empty?
         @index = [@index, @list.size - 1].min

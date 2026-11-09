@@ -359,40 +359,6 @@ module Tn3270
           end
         end
 
-        MF_STRING = 0x0
-        MF_GRAYED = 0x1
-        MF_BYCOMMAND = 0x0
-
-        # Remembers the command IDs of `count` placeholder items starting at
-        # `first` in top-level menu `menu_index`, so their text can be changed
-        # later with set_slots. LibUI still runs each slot's handler.
-        def reserve_slots(menu_index, first, count)
-          return unless usable?
-
-          @slot_menu = Win32.fn("GetSubMenu", [P, I], P).call(@bar, menu_index)
-          @slot_first = first
-          @slot_ids = Array.new(count) { |i| Win32.fn("GetMenuItemID", [P, I]).call(@slot_menu, first + i) }
-        end
-
-        # Shows one slot per label (the rest are removed). An empty list shows
-        # `empty` as a greyed-out item.
-        def set_slots(labels, empty:)
-          return unless @slot_ids
-
-          remove = Win32.fn("RemoveMenu", [P, I, I])
-          insert = Win32.fn("InsertMenuW", [P, I, I, U, P])
-          @slot_ids.each { |id| remove.call(@slot_menu, id, MF_BYCOMMAND) }
-          shown = labels.first(@slot_ids.size)
-          if shown.empty?
-            insert.call(@slot_menu, @slot_first, MF_BYPOSITION | MF_STRING | MF_GRAYED, @slot_ids[0], Win32.wide(empty))
-          else
-            shown.each_with_index do |text, i|
-              insert.call(@slot_menu, @slot_first + i, MF_BYPOSITION | MF_STRING, @slot_ids[i], Win32.wide(text))
-            end
-          end
-          Win32.fn("DrawMenuBar", [P]).call(@hwnd)
-        end
-
         # Opens one top-level menu with its top-left corner at a screen point.
         # Blocks until the menu closes.
         def popup_submenu(index, x, y)

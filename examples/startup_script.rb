@@ -1,13 +1,15 @@
-# Startup script: runs inside the emulator each time its connection comes up.
+# Startup script: runs each time its connection comes up.
 # Pick it in Session > Connections > Startup script.
 #
-# It runs against the live session, so the window shows every step. Keys you
-# type while it runs wait until it ends. Available here:
+# It runs in its own process, attached to that tab's session, so the window
+# shows every step and stays usable meanwhile. Available here:
 #   Session methods, called directly: wait_for_text, fill, type, enter, pf(n),
 #     pa(n), press(:clear), move_to, text, read, input_fields... (docs/API.md)
 #   session     the same session, if you prefer session.fill(...)
 #   connection  the saved connection: connection["name"], connection["host"], ...
-#   status "…"  shows a message in the status bar
+#   status "…"  shows a message in the status bar (so does anything you puts)
+#   emulator    "ruby3270"; session_name: the session's name
+#   ENV         TN3270_EMULATOR, TN3270_SESSION, TN3270_SCRIPT_PORT... (README)
 #
 # This one signs on to the fake host (ruby bin/fake_host). Keep passwords out
 # of the file: read them from an environment variable instead.

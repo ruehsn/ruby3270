@@ -268,17 +268,21 @@ after an error (`X -f` in the status bar): `s.press(:reset)` clears that.
 
 ## Startup scripts
 
-A saved connection can run a Ruby file each time it connects (Session > Connections > Startup
-script), for example to sign on. It runs inside the window, against the live session, with the
-session methods available directly:
+A saved connection can run a script each time it connects (Session > Connections > Startup
+script), for example to sign on. It runs in its own process, attached to that tab's session
+through its script port, so the window stays usable. A Ruby script has the session methods
+available directly:
 
 ```ruby
 logon(ENV.fetch("TN3270_USER"), ENV["TSO_PW"], wait_for: "READY")
 status "Signed on to #{connection['name']}"   # a message in the status bar
 ```
 
-`session` is the session itself and `connection` is the saved connection (a Hash: `"name"`,
-`"host"`, `"port"`...). If the script fails, the status bar shows the error and its line number.
+`session` is the attached session, `connection` is the saved connection (a Hash: `"name"`,
+`"host"`, `"port"`...), `emulator` is `"ruby3270"` and `session_name` the session's name. Lines
+the script prints show in the status bar. If the script fails, the status bar shows the error and
+its line number. Scripts in other languages get the same facts as environment variables
+(`TN3270_EMULATOR`, `TN3270_SESSION`, `TN3270_SCRIPT_PORT`...; the full list is in the README).
 See [examples/startup_script.rb](../examples/startup_script.rb).
 
 ## Errors

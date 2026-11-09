@@ -220,27 +220,68 @@ class ControllerTest < Minitest::Test
     @c.type("42")
     wait_until { @c.screen_text.match?(/Numeric only: +42/) }
   end
+  # Startup scripts run in their own process and attach through a script
+  # port the tab opens for them (even with Allow Scripts to Attach off).
+  def script_conn(file, body, name: "t")
+    script = File.join(@dir, file)
+    File.write(script, body)
+    @c.instance_variable_get(:@config)["script_port"] = 3390 # clear of a real window's 3271
+    Tn3270::Gui::Config::DEFAULT_CONNECTION.merge("name" => name, "port" => @host.port, "script" => script)
+  end
+
   def test_startup_script_runs_once_connected
-    script = File.join(@dir, "logon.rb")
-    File.write(script, <<~SCRIPT)
+    conn = script_conn("logon.rb", <<~SCRIPT)
       wait_for_text("USER ID")
       fill("USER ID", connection["name"] == "t" ? "scripted" : "wrong")
       enter
       session.wait_for_text("MAIN MENU")
       status "Logged on by script"
     SCRIPT
-    conn = Tn3270::Gui::Config::DEFAULT_CONNECTION.merge("name" => "t", "port" => @host.port, "script" => script)
     @c.connect(conn)
-    wait_until { @c.message == "Logged on by script" }
-    assert_includes @c.screen_text, "Signed on as SCRIPTED"
+    wait_until(15) { @c.message == "Logged on by script" }
+    wait_until { @c.screen_text.include?("Signed on as SCRIPTED") } # the window sees it at its next poll
+    wait_until { !@c.startup_script_running? }
+    assert_equal "Logged on by script", @c.message
+  end
+
+  def test_startup_script_knows_its_emulator_and_session
+    conn = script_conn("who.rb", <<~SCRIPT, name: "Prod LPAR")
+      status [emulator, session_name, ENV["TN3270_HOST_PORT"], ENV["TN3270_SCRIPT_PORT"]].join("|")
+    SCRIPT
+    @c.connect(conn)
+    wait_until(15) { @c.message.to_s.start_with?("ruby3270|") }
+    assert_equal "ruby3270|Prod LPAR|#{@host.port}|#{@c.attach_port}", @c.message
+  end
+
+  def test_startup_script_does_not_block_typing
+    conn = script_conn("slow.rb", "wait_for_text('USER ID')
+status 'waiting'
+sleep 30
+")
+    @c.connect(conn)
+    wait_until(15) { @c.message == "waiting" }
+    assert @c.startup_script_running?
+    @c.type("typed")
+    wait_until { @c.screen_text.include?("typed") }
+    @c.disconnect # its session is gone: the script stops too
+    wait_until { !@c.startup_script_running? }
   end
 
   def test_startup_script_error_shows_in_status_bar
-    script = File.join(@dir, "bad.rb")
-    File.write(script, "wait_for_text('USER ID')\nno_such_method_here\n")
-    @c.connect(Tn3270::Gui::Config::DEFAULT_CONNECTION.merge("port" => @host.port, "script" => script))
-    wait_until { @c.message.to_s.start_with?("Startup script failed") }
+    conn = script_conn("bad.rb", "wait_for_text('USER ID')
+no_such_method_here
+")
+    @c.connect(conn)
+    wait_until(15) { @c.message.to_s.start_with?("Startup script failed") }
     assert_includes @c.message, "line 2"
+  end
+
+  def test_startup_script_in_another_language
+    skip "Windows batch file" unless Gem.win_platform?
+    conn = script_conn("who.cmd", "@echo %TN3270_EMULATOR% %TN3270_SESSION%
+", name: "Batch")
+    @c.connect(conn)
+    wait_until(15) { @c.message == "ruby3270 Batch" }
   end
 
   # TLS to a host that doesn't use it: the handshake never finishes. The

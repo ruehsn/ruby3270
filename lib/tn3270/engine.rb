@@ -2,6 +2,7 @@
 
 require "open3"
 require "rbconfig"
+require_relative "process_job"
 
 module Tn3270
   class Error < StandardError; end
@@ -75,6 +76,7 @@ module Tn3270
       else
         @stdin, @stdout, @wait = Open3.popen2(*args, err: File::NULL)
         @stdout.set_encoding("UTF-8")
+        @job = ProcessJob.new(@wait.pid) # never outlives this program
       end
     rescue Errno::ENOENT
       raise Error, "Could not start '#{exe}'. Install the x3270 suite (wc3270 on Windows includes ws3270.exe) " \
@@ -221,6 +223,8 @@ module Tn3270
       @wait.join(2) || Process.kill("TERM", @wait.pid)
     rescue SystemCallError, IOError
       nil
+    ensure
+      @job&.release unless attached? # it's done: closing the job ends anything left
     end
 
     private
@@ -233,6 +237,7 @@ module Tn3270
 
       pid = Process.spawn(*args, "-scriptport", "127.0.0.1:#{port}", in: File::NULL, out: File::NULL, err: File::NULL)
       @wait = Process.detach(pid)
+      @job = ProcessJob.new(pid) # never outlives this program
       deadline = Time.now + 10
       # Wait for the engine to take the port before connecting (see port_in_use?).
       sleep 0.02 while @wait.alive? && Time.now < deadline && !self.class.port_in_use?(port)

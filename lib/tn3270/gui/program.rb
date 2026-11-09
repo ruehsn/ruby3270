@@ -19,11 +19,6 @@ module Tn3270
     # sidebar, crosshair...) apply to every window.
     class Program
       PUMP_MS = 25 # how often the main thread checks for screen changes
-      RECENT_SLOTS = 8 # saved sessions listed in the Session menu
-      # Their position in the Session menu: after New Tab, New Window, Close Tab,
-      # Move Tab to New Window, separator, Connections, Connect/Disconnect,
-      # Allow Scripts, separator.
-      RECENT_FIRST = 9
       DRAG_START = 6 # pixels the mouse moves before a press on a tab is a drag
       DETACH = 30 # pixels above or below the tab strip before a tab tears off
       CASCADE = 32 # a new window opens this far right of and below the current one
@@ -164,7 +159,6 @@ module Tn3270
       # Whether `tab` is still open in one of the windows.
       def open_tab?(tab) = @windows.any? { |w| w.tabs.include?(tab) }
 
-      def refresh_recent_menu =@windows.each { |w| w.command(:refresh_recent_menu) }
 
       # ---- dragging tabs ---------------------------------------------------------------
       # A press on a tab starts a drag; from then on the timer follows the
@@ -396,7 +390,8 @@ module Tn3270
         item(m, "New Tab", :new_tab)
         item(m, "New Window") { new_window }
         item(m, "Duplicate Tab", :duplicate_tab)
-        item(m, "Rename Tab...", :rename_tab)
+        item(m, "Rename Tab", :rename_tab)
+        item(m, "Edit Session...", :edit_session)
         item(m, "Close Tab", :close_tab)
         item(m, "Move Tab to New Window", :tab_to_new_window)
         UI.menu_append_separator(m)
@@ -410,10 +405,6 @@ module Tn3270
         UI.menu_append_separator(m)
         item(m, "Export Settings...", :export_settings)
         item(m, "Import Settings...", :import_settings)
-        UI.menu_append_separator(m)
-        # Placeholders for saved sessions; their text is filled in on Windows
-        # (see TerminalWindow#refresh_recent_menu).
-        RECENT_SLOTS.times { |i| item(m, "Session #{i + 1}", :connect_recent, i) } if Win32.available?
         # libui puts a separator before Quit by itself.
         @menu[:quit] = UI.menu_append_quit_item(m)
         UI.on_should_quit do

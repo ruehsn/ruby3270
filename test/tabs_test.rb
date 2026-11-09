@@ -207,3 +207,36 @@ class PickerSettingsTest < Minitest::Test
     assert_equal [], match("   ")
   end
 end
+
+# Session > Edit Session opens the connections dialog on the tab's session.
+class EditSessionTest < Minitest::Test
+  def dialog(select)
+    require "tn3270/gui/dialogs"
+    config = Tn3270::Gui::Config.new(Tn3270::Gui::Config::DEFAULTS.merge(
+                                       "connections" => [{ "name" => "Dev", "host" => "dev", "port" => 23 },
+                                                         { "name" => "Prod", "host" => "prod", "port" => 992 }]
+                                     ), File::NULL)
+    Tn3270::Gui::ConnectionsDialog.new(config, on_connect: ->(_) {}, select: select)
+  end
+
+  def test_opens_on_the_saved_connection
+    assert_equal "Prod", dialog({ "name" => "Prod", "host" => "prod", "port" => 992 }).current["name"]
+    assert_equal "Dev", dialog({ "name" => "dev:23", "host" => "dev", "port" => 23 }).current["name"] # same host
+  end
+
+  def test_a_typed_connection_is_added_for_saving
+    d = dialog(Tn3270::Gui::Config.connection_from_string("other:3270"))
+    assert_equal "other:3270", d.current["name"]
+    assert_equal "other", d.current["host"]
+  end
+end
+
+class DuplicateConnectionNameTest < Minitest::Test
+  def copy(n, taken) = (require "tn3270/gui/dialogs"; Tn3270::Gui::ConnectionsDialog.copy_name(n, taken))
+
+  def test_next_free_number
+    assert_equal "Prod (2)", copy("Prod", ["Prod"])
+    assert_equal "Prod (3)", copy("Prod", ["Prod", "Prod (2)"])
+    assert_equal "Prod (3)", copy("Prod (2)", ["Prod", "Prod (2)"]) # a copy of a copy
+  end
+end

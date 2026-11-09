@@ -55,7 +55,7 @@ module Tn3270
         "hide_menu_bar" => false, # without the custom title bar: menus open from the ☰ button in the status bar
         "last_connection" => nil, # name of the connection the status-bar button reconnects to
         "desktop_shortcuts" => true, # Windows: saving a connection puts a shortcut to it on the desktop
-        "recent" => [], # connection names, most recently used first (orders the Session menu)
+        "recent" => [], # connection names, most recently used first (orders the new tab page's list)
         "welcome_imported" => nil, # the welcome.yml the first launch imported (see SettingsTransfer)
         "keys" => {}, # key binding overrides: { "F13" => "pf13", "Escape" => "" }
         "connections" => [DEFAULT_CONNECTION]

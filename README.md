@@ -26,15 +26,15 @@ The 3270 protocol itself is handled by **s3270** (`ws3270.exe` on Windows) from 
   - **Drag a tab** along the strip to reorder it; drag it off the strip to give it a window of its own;
     drop it onto another window's tabs to join them there. The session stays connected the whole time
   - Right-click a tab for New Tab, Duplicate Tab, Rename Tab, Move Tab to New Window, Close Tab and Close
-    Other Tabs (Duplicate and Rename are in the Session menu too). Double-click a tab to rename it
-  - A **new tab** lists your saved sessions: click one, or press 1-9. At the top, **Duplicate** (or D)
+    Other Tabs (Duplicate and Rename are in the Session menu too). Double-click a tab to rename it right
+    there: type, then Enter (Esc cancels; an empty name goes back to the session name)
+  - A **new tab** lists your saved sessions, most recently used first: click one, or press 1-9. At the top, **Duplicate** (or D)
     opens another connection to the session in the tab you opened it from
-  - Opening a session (Session menu, Connections, a desktop shortcut) uses the current tab if it isn't
+  - Opening a session (Connections, a desktop shortcut) uses the current tab if it isn't
     connected, otherwise a new tab, so a live session is never replaced
   - **One running copy**: launching ruby3270 again (a desktop shortcut, say) opens that session as a tab in
     the window you have open, instead of a second program. Turn off with `single_instance: false`
 - The window title (and taskbar) shows the current tab's session name, never the host address. Two tabs on the same session are numbered: `PROD`, `PROD (2)`
-- Session menu lists your saved sessions, most recently used first; pick one to connect
 - Status bar pinned to the bottom of the window, with a status light: green = connected,
   amber = connecting, grey = disconnected. Click it to disconnect, or to reconnect to the last host
 - F1-F12 = PF1-12, Shift+F1-F12 = PF13-24, Ctrl+F1-F3 = PA1-3, Right Ctrl = New line
@@ -48,13 +48,17 @@ The 3270 protocol itself is handled by **s3270** (`ws3270.exe` on Windows) from 
 - **Display font** (View > Font...): pick from the monospaced fonts installed on the PC, with a preview in
   the chosen font; the size always follows the window
 - **Connections** (Session > Connections...): saved hosts with port, TLS, LU name and screen size
-  (24x80, 32x80, 43x80, 27x132, 62x160 or custom), plus the path to the engine
+  (24x80, 32x80, 43x80, 27x132, 62x160 or custom), plus the path to the engine. **Duplicate** copies the
+  connection on show as "Name (2)", "Name (3)"... for a variant of a session
+- **Edit Session** (Session > Edit Session...): the same dialog, open on the current tab's session, to change
+  and save it. Connect reconnects the tab with the changes; a typed `host:port` session can be saved this way
 - **TLS certificates**: by default the host's certificate isn't checked, so self-signed mainframe
   certificates just work. Tick "Verify the host's certificate" on a connection to check it. Unchecked, the
   connection is encrypted but can't tell an impostor from the real host, so turn it on for hosts
   reached over networks you don't trust
-- **Startup script** (per connection): a Ruby file run each time that connection comes up, for example to
-  sign on. See [Startup scripts](#startup-scripts)
+- **Startup script** (per connection): a file run in the background each time that connection comes up,
+  for example to sign on. Ruby, PowerShell, batch or Python; it's told which session to drive and that
+  ruby3270 started it. See [Startup scripts](#startup-scripts)
 - **Desktop shortcuts** (Windows): pressing Save in Session > Connections puts a shortcut with the app icon
   on your desktop, named after the session. Double-click it to open the emulator already connecting to that
   session. Renaming or deleting the session removes its old shortcut. Turn off with `desktop_shortcuts: false`
@@ -226,9 +230,14 @@ the fake host.
 
 ## Startup scripts
 
-A connection can run a Ruby file each time it comes up: pick it under Session > Connections > Startup
-script. It runs against the live session, so you see every step, and the keys you type meanwhile wait
-until it ends. Session methods can be called directly ([examples/startup_script.rb](examples/startup_script.rb)):
+A connection can run a script each time it comes up: pick it under Session > Connections > Startup
+script. It runs in its own process, attached to that tab's session, so you see every step and the window
+stays usable while it works (anything you type goes to the same session). A script may run as long as it likes,
+for example to watch the session. Closing the tab, disconnecting or reconnecting stops it, together with
+anything it started, and so does ruby3270 ending in any way, even a crash (on Windows each script and engine
+sits in a job object that Windows closes with the app), so nothing is left running. Ruby scripts run with
+`rubyw.exe`, so no console window opens. In a Ruby script the session methods can be called
+directly ([examples/startup_script.rb](examples/startup_script.rb)):
 
 ```ruby
 wait_for_text("USER ID")
@@ -239,7 +248,26 @@ wait_for_text("READY")
 status "Signed on to #{connection['name']}"   # shown in the status bar
 ```
 
-If the script fails, the status bar shows the error and its line number.
+If the script fails, the status bar shows the error and its line number. Each line a script prints shows
+in the status bar too.
+
+Other kinds of file work as well: `.ps1`, `.bat`/`.cmd`, `.py`, `.vbs`/`.js`, or any program. Every script
+gets environment variables saying who started it and which session to drive, so one script shared by
+several emulators can tell them apart:
+
+| Variable | Value |
+| --- | --- |
+| `TN3270_EMULATOR` | `ruby3270` |
+| `RUBY3270_VERSION` | the app's version |
+| `TN3270_SESSION` | the session's name |
+| `TN3270_HOST`, `TN3270_HOST_PORT`, `TN3270_LU`, `TN3270_TLS` (`1`/`0`), `TN3270_ROWS`, `TN3270_COLS` | the host it's connected to |
+| `TN3270_SCRIPT_HOST`, `TN3270_SCRIPT_PORT` | where to attach: `127.0.0.1` and this tab's own port |
+| `RUBY3270_LIB` | the app's `lib` folder, for `require "tn3270"` |
+| `RUBY3270_CONNECTION` | the saved connection as JSON |
+
+A script in another language drives the session by sending
+[s3270 actions](https://x3270.miraheze.org/wiki/S3270_actions) to that port. A tab with a startup script
+always opens its port, even with Session > Allow Scripts to Attach off.
 
 ## Config
 
