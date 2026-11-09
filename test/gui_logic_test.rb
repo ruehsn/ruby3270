@@ -35,7 +35,7 @@ class KeymapTest < Minitest::Test
     assert_equal [:key, :enter], K.translate(ev(key: "\n", key_value: 10))
     assert_equal [:key, :newline], K.translate(ev(key: "\n", key_value: 10, modifiers: [:shift]))
     assert_equal [:key, :backtab], K.translate(ev(key: "\t", key_value: 9, modifiers: [:shift]))
-    assert_equal [:key, :clear], K.translate(ev(ext_key: :escape))
+    assert_equal [:key, :escape], K.translate(ev(ext_key: :escape)) # Reset when locked, otherwise Clear
     assert_equal [:key, :erase_eof], K.translate(ev(ext_key: :end))
     assert_equal [:key, :reset], K.translate(ev(key: "r", modifiers: [:ctrl]))
     assert_equal [:paste], K.translate(ev(key: "v", modifiers: [:ctrl]))
@@ -295,12 +295,12 @@ def test_second_window_uses_the_next_free_port
   require "socket"
   server = TCPServer.new("127.0.0.1", 0) # stands in for the first window
   taken = server.addr[1]
-  Thread.new { loop { server.accept.close } }
+    Thread.new { loop { server.accept.close } rescue IOError }
   cfg = Tn3270::Gui::Config.load(File.join(@dir, "second.yml"))
   cfg["allow_attach"] = true
   cfg["script_port"] = taken
   second = Tn3270::Gui::Controller.new(cfg, on_change: -> {})
-  refute_nil second.attach_port
+  wait_until { second.attach_port } # the engine starts in the background
   refute_equal taken, second.attach_port
   second.connect("127.0.0.1:#{@host.port}")
   wait_until { second.screen_text.include?("USER ID") }
@@ -308,6 +308,68 @@ ensure
   second&.shutdown
   server&.close
 end
+
+  # Esc while the keyboard is locked: Reset at once (not queued behind the
+  # lock), and the keys typed meanwhile are dropped, not sent later.
+  def test_escape_resets_while_waiting_and_drops_typeahead
+    sign_on_to("4", "KEY TESTER (SLOW HOST)") # answers each key after 2 seconds
+    @c.press(:enter)
+    wait_until { @c.waiting_for_host? }
+    "abc".each_char { |ch| @c.type(ch) }
+    wait_until { @c.typeahead_count == 3 }
+    @c.press(:escape)
+    wait_until { @c.typeahead_count.zero? && !@c.waiting_for_host? }
+    assert_equal "Reset - 3 queued keys dropped", @c.message
+    sleep 2.5 # the slow host answers the Enter
+    refute_includes @c.screen_text, "Host saw:   abc"
+    refute_match(/Last AID received:\s+CLEAR/, @c.screen_text)
+  end
+
+  def test_escape_unlocks_a_bad_entry
+    sign_on_to("1", "KEY TESTER")
+    @c.move_to(0, 5) # the title: protected
+    @c.type("x")
+    # The engine reports this as an ordinary lock; it's known by its message.
+    wait_until { @c.operator_error? }
+    assert_includes @c.message, "can't type there"
+    assert @c.locked?
+    @c.type("y") # keys typed after a bad entry are thrown away, as on a real terminal
+    wait_until { @c.message.to_s.include?("discarded") }
+    @c.press(:escape)
+    wait_until { !@c.locked? && !@c.operator_error? }
+    refute_match(/Last AID received:\s+CLEAR/, @c.screen_text) # it was a Reset, not a Clear
+    # ...and the cursor moved off the title into a field you can type in.
+    session = @c.instance_variable_get(:@session)
+    wait_until do
+      s = session.screen
+      s.field_at(s.cursor_row, s.cursor_col)&.input?
+    end
+  end
+
+  # Spelling fix: the word is swapped and the rest of the field moves to fit.
+  def test_replace_word_in_a_field
+    sign_on_to("1", "KEY TESTER") # "Typed text" is a 40-long field; its text starts at 8,17
+    @c.type("teh job ran")
+    wait_until { @c.screen_text.include?("teh job ran") }
+    @c.replace_word(8, 17, "teh", "the")
+    wait_until { @c.screen_text.lines[8].include?("the job ran") }
+    @c.replace_word(8, 21, "job", "batch job")
+    wait_until { @c.screen_text.lines[8].include?("the batch job ran") }
+    @c.replace_word(8, 17, "teh", "the") # gone already: nothing changes
+    wait_until { @c.message.to_s.include?("changed") }
+    @c.replace_word(8, 17, "the", "x" * 30) # won't fit in the field
+    wait_until { @c.message.to_s.include?("No room") }
+    assert_includes @c.screen_text.lines[8], "the batch job ran"
+  end
+
+  def test_escape_is_clear_when_unlocked
+    sign_on_to("1", "KEY TESTER")
+    # The screen can arrive a moment before the keyboard unlocks (and Escape
+    # on a locked keyboard is Reset, not Clear).
+    wait_until { !@c.snapshot&.status&.keyboard_locked? }
+    @c.press(:escape)
+    wait_until { @c.screen_text.match?(/Last AID received:\s+CLEAR/) }
+  end
 
   def test_shutdown_during_a_hanging_connect
     @c.connect(Tn3270::Gui::Config::DEFAULT_CONNECTION.merge("port" => @host.port, "tls" => true))

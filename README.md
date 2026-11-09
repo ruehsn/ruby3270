@@ -9,6 +9,8 @@ A 3270 mainframe terminal for the desktop, written in Ruby. Old green screens, n
 The 3270 protocol itself is handled by **s3270** (`ws3270.exe` on Windows) from the
 [x3270 suite](https://x3270.bgp.nu). ruby3270 drives it and draws the screen.
 
+![ruby3270: two tabs on the same session in the title bar, the main menu of the built-in fake host, and the snippets sidebar](docs/images/main-window.png)
+
 ## Features
 
 - Screen scales with the window: the font is measured and the largest size that fits is picked on every resize
@@ -17,6 +19,21 @@ The 3270 protocol itself is handled by **s3270** (`ws3270.exe` on Windows) from 
 - VS Code style title bar (Windows): the menus sit inside the title bar, next to the icon, with the
   window buttons on the right (to use the normal Windows title bar instead, set `custom_title_bar: false`
   in the config file)
+- **Session tabs**, like a browser: several sessions in one window, each tab with its own status light
+  (green = connected, amber = connecting, grey = not connected). The tabs sit in the title bar next to the
+  menus. Ctrl+T or the + button opens a tab, Ctrl+W or the tab's × closes it (so does a middle-click),
+  Ctrl+Tab / Ctrl+Shift+Tab move between them, Ctrl+N opens a new window
+  - **Drag a tab** along the strip to reorder it; drag it off the strip to give it a window of its own;
+    drop it onto another window's tabs to join them there. The session stays connected the whole time
+  - Right-click a tab for New Tab, Duplicate Tab, Rename Tab, Move Tab to New Window, Close Tab and Close
+    Other Tabs (Duplicate and Rename are in the Session menu too). Double-click a tab to rename it
+  - A **new tab** lists your saved sessions: click one, or press 1-9. At the top, **Duplicate** (or D)
+    opens another connection to the session in the tab you opened it from
+  - Opening a session (Session menu, Connections, a desktop shortcut) uses the current tab if it isn't
+    connected, otherwise a new tab, so a live session is never replaced
+  - **One running copy**: launching ruby3270 again (a desktop shortcut, say) opens that session as a tab in
+    the window you have open, instead of a second program. Turn off with `single_instance: false`
+- The window title (and taskbar) shows the current tab's session name, never the host address. Two tabs on the same session are numbered: `PROD`, `PROD (2)`
 - Session menu lists your saved sessions, most recently used first; pick one to connect
 - Status bar pinned to the bottom of the window, with a status light: green = connected,
   amber = connecting, grey = disconnected. Click it to disconnect, or to reconnect to the last host
@@ -45,7 +62,16 @@ The 3270 protocol itself is handled by **s3270** (`ws3270.exe` on Windows) from 
   Ctrl+C copies the whole screen. A plain click moves the cursor. Right-click while something is
   selected copies it, clears the selection and moves the cursor to the pointer
 - **Type-ahead**: keys typed while the host is still answering (status bar shows X SYSTEM and
-  TYPE-AHEAD n) are queued and sent in order once it answers. Reset cancels the wait
+  TYPE-AHEAD n) are queued and sent in order once it answers
+- **Esc unlocks**: while the keyboard is locked (X SYSTEM, or X -f after typing where you can't), Esc is
+  Reset: it unlocks at once, drops any queued keys, and if the cursor is somewhere you can't type it
+  moves to the next input field. While a bad entry has the keyboard locked (X -f) the screen background
+  turns dark red. On an unlocked screen Esc is Clear. Ctrl+R is always Reset
+- **Spell check** (Windows): misspelled words in long input fields (20+ characters, `spell_min_field`)
+  get a red wavy underline. ALL-CAPS words are checked too. Right-click one for suggestions, Ignore, or
+  Add to the Windows dictionary; Ctrl+; jumps to the next one. Codes like SYS1.PROCLIB or IEF142I and
+  hidden fields are skipped. View > Spell Check turns it off; View > Spell Check Language picks the
+  language. Uses the spell checker built into Windows, so there's nothing to install
 - **Find** (Ctrl+F or Edit > Find...): highlights matches on the screen as you type; Next / Previous move
   the cursor to them. "Search Screen History" lists matching lines in saved screens
 - **Response time**: how long the host took to answer the last Enter/PF/PA key, in the status bar
@@ -60,6 +86,12 @@ The 3270 protocol itself is handled by **s3270** (`ws3270.exe` on Windows) from 
 - **Tooltips**: rest the pointer on the connection light or the SNIP, ENTER, FK or CAPS buttons to see what they do
 - **Snippets** (SNIP button, View > Snippets Sidebar, or Ctrl+Space): text and key sequences you type with a
   double-click, a hotkey or a few letters. See [Snippets](#snippets)
+- **Quick picker finds settings too** (Ctrl+Space): type `caps`, `auto enter`, `underline`, `key bar`...
+  and Enter switches that option on or off, just like its menu item
+- **Export / Import Settings** (Session menu): your sessions, snippets and options in one file, to move to
+  another PC or give to a colleague. A team's `welcome.yml` sets up a coworker's first launch. See [Config](#config)
+- **Quick keys**: the screen updates as soon as the host answers (about 6 ms for a cursor key against a local
+  host), and a new tab opens at once while its engine starts in the background
 - App icon (`assets/tn3270.ico`, drawn by `script/make_icon.rb`)
 - 3270 colors, intensified fields, hidden (password) fields, reverse video and underscore
 - Optional underlines on input fields
@@ -109,6 +141,7 @@ ruby bin/tn3270 127.0.0.1:3270  # terminal 2: the emulator
 ```
 
 `ruby bin/tn3270 --session "Work mainframe"` opens a saved session by name (desktop shortcuts use this).
+If ruby3270 is already running, the session opens as a tab in it and the new launch exits.
 
 Sign on with any user ID. Option 1 is a key tester that shows which PF/PA key the
 host received, option 2 is a color chart, and option 3 shows a ruler across all 160 columns.
@@ -117,8 +150,8 @@ host received, option 2 is a color chart, and option 3 shows a ruler across all 
 
 Full guide, with a reference of every call and recipes for common jobs: [docs/API.md](docs/API.md).
 
-A script can start its own session, or **attach to the one open in the window** (on by default; the
-status bar shows `PORT 3271`) so you watch it work and the session stays open afterwards. Any program
+A script can start its own session, or **attach to the one open in the window** (on by default, port
+3271 for the first session) so you watch it work and the session stays open afterwards. Any program
 on this computer can then drive the session; untick Session > Allow Scripts to Attach to stop that.
 
 ```ruby
@@ -146,6 +179,8 @@ host), [examples/attach_to_session.rb](examples/attach_to_session.rb) (drives th
 
 ## Snippets
 
+![Quick pick: Ctrl+Space, type "sign" and Enter signs on to the fake host; typing "caps" finds the Caps Lock setting and Enter switches it on](docs/images/snippet-search.gif)
+
 A snippet is text to type, with keys and placeholders in braces, so one snippet can walk through
 several screens:
 
@@ -154,12 +189,14 @@ several screens:
 {ask:Data set level}{Enter}
 ```
 
-- **Sidebar** (the SNIP button, View > Snippets Sidebar or Ctrl+Shift+S): search, double-click to type
-  one, **New / Edit / Delete**, and **Files** to choose where snippets come from. Rest the pointer on a
+- **Sidebar** (the SNIP button, View > Snippets Sidebar or Ctrl+Shift+S): the window grows wider to make
+  room, so the screen keeps its size. Search, double-click to type one, **New / Edit / Delete**, and **Files** to choose where snippets come from. Rest the pointer on a
   snippet to see its text.
 - **Quick pick** (Ctrl+Space, or Edit > Snippets: Quick Pick): type a few letters, Enter types it.
   **Ctrl+N** (or the New button) makes a new snippet named after what you typed; **Ctrl+E** (or Edit) edits
   the chosen one. A snippet from a shared file you can't change opens as your own copy.
+  It finds settings too: type `caps`, `auto enter`, `underline`, `crosshair`, `key bar`, `spell`... and
+  Enter switches that setting on or off (the row shows ON / OFF), just like its menu item.
 - **Hotkeys**: Ctrl+1 to Ctrl+9 type the first nine snippets in the sidebar list (change them in
   Keys > Keyboard Mapping).
 - **From the screen**: select text, then Edit > New Snippet from Selection.
@@ -216,6 +253,7 @@ desktop_shortcuts: true   # Save in Connections also makes a desktop shortcut
 snippet_files:            # shared snippet files or folders (yours: ~/.ruby3270-snippets.yml)
 - '\\server\team\3270-snippets.yml'
 lock_ratio: true          # keep the window the shape of the screen while resizing
+single_instance: true     # launching again opens a tab in the running copy
 keys:                     # overrides of the default key bindings ("" unbinds)
   Ctrl+Q: reset
   Escape: ""
@@ -231,6 +269,23 @@ connections:
   script: 'C:\scripts\logon.rb'   # startup script ("" = none)
 ```
 
+**Moving settings to another PC or a colleague:** Session > Export Settings saves your sessions, your own
+snippets and the options you've changed into one `.yml` file. Session > Import Settings reads one back:
+sessions and snippets with the same name are replaced, your others are kept, and the file's options replace
+yours. Recently used sessions and the engine path stay on the computer they're from.
+
+**Handing ruby3270 out to a team (`welcome.yml`):** set up one PC the way you want it, use Export Settings,
+and name the file `welcome.yml`. Someone's first launch (no settings yet) imports it: the team's sessions
+(instead of the built-in demo one), snippets and options. After that their own settings take over; it's
+never imported again, so later changes they make are safe. ruby3270 looks for it in this order:
+
+1. the file the `RUBY3270_WELCOME` environment variable names (e.g. `\\server\team\welcome.yml`, set by IT)
+2. `C:\ProgramData\ruby3270\welcome.yml` (shared by everyone on the PC)
+3. `welcome.yml` in the program folder
+
+Use 1 or 2 so updating the program (a new zip, a `git pull`) can't remove it. The program never ships its
+own `welcome.yml` (it's in `.gitignore`), so an update won't replace yours even in the program folder.
+
 The menus write all of these for you; you rarely need to edit the file. A plain `ruby bin/tn3270 host:port`
 uses `rows`/`cols` (default 62 x 160).
 
@@ -239,9 +294,15 @@ uses `rows`/`cols` (default 62 x 160).
 ```
 ruby -Ilib test/session_test.rb      # Ruby API against the fake host
 ruby -Ilib test/gui_logic_test.rb    # key mapping and the GUI's background worker
+ruby -Ilib test/tabs_test.rb         # tab strip, tab names and numbers, the single-instance handoff, picker settings
+ruby -Ilib test/settings_transfer_test.rb  # Export / Import Settings and welcome.yml
+ruby -Ilib test/spelling_test.rb     # which words spell check looks at
 ```
 
-These need s3270 but not the window gems.
+These need s3270; `tabs_test.rb` also needs the `libui` gem.
+
+**README images** (`docs/images`) are recorded from inside the app against the fake host, so nothing is
+typed into your desktop: see the comments at the top of `script/readme_media/record.rb`.
 
 ## Things to know
 

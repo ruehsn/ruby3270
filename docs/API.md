@@ -35,11 +35,11 @@ end   # disconnects and stops the engine
 so you watch every step, and the session stays open when the script ends. Good for automating
 the boring part of something you're doing by hand.
 
-1. Nothing to set up: ruby3270 allows this by default, and the status bar shows `PORT 3271`.
+1. Nothing to set up: ruby3270 allows this by default, on port 3271.
    It only listens on this computer (127.0.0.1), but any program running as you can use it, so
-   untick **Session > Allow Scripts to Attach** if you don't want that. The first window uses port
-   3271; a second window takes the next free one (3272, ...), and the status bar always shows
-   which, so use `Session.attach(port: 3272)` for that one. Change where the search starts with
+   untick **Session > Allow Scripts to Attach** if you don't want that. The first session uses port
+   3271; each other tab or window takes the next free one (3272, ...). Rest the pointer on the
+   connection light in the status bar to see which, and use `Session.attach(port: 3272)` for that one. Change where the search starts with
    `script_port:` in the config file.
 2. Connect as usual.
 3. Run the script:

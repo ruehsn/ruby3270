@@ -61,7 +61,9 @@ module Tn3270
         @typeahead = []
         @aid_sent_at = nil
         @response_time = nil
-        @session = new_session(config["rows"], config["cols"])
+        @rows = config["rows"]
+        @cols = config["cols"]
+        @session = nil # the engine starts on the worker, so a new tab opens at once
         @worker = Thread.new { work }
       end
 
@@ -88,7 +90,7 @@ module Tn3270
           rows = conn["rows"].to_i
           cols = conn["cols"].to_i
           resize = rows.positive? && cols.positive? && [rows, cols] != [@rows, @cols]
-          if resize || @attach_port != wanted_port
+          if resize || attach_changed?
             @session.close
             @session = new_session(resize ? rows : @rows, resize ? cols : @cols)
           end
@@ -124,15 +126,81 @@ module Tn3270
       def type(text) = enqueue(input: true) { type_checked(text) }
       def move_to(row, col) = enqueue(input: true) { @session.move_to(row, col) }
 
+      # Shows a message in the status bar (until the next one).
+      def flash(text)
+        @message = text
+        notify
+      end
+
+      # Replaces the word `old` starting at row, col with `new` (a spelling
+      # fix). The rest of the field moves to fit; if it won't fit, nothing
+      # changes and the status bar says so. The cursor ends after the new word.
+      def replace_word(row, col, old, new)
+        enqueue(input: true) do
+          screen = @session.screen
+          field = screen.field_at(row, col)
+          offset = ((row * screen.cols) + col) - ((field.row * screen.cols) + field.col) if field
+          if !field&.input? || field.value.to_s[offset, old.size] != old
+            @message = "The word changed before it could be replaced"
+            next notify
+          end
+
+          tail = field.value.to_s[(offset + old.size)..].to_s.rstrip
+          if offset + new.size + tail.size > field.length
+            @message = "No room in the field for \"#{new}\""
+            next notify
+          end
+
+          @session.move_to(row, col)
+          @session.press(:erase_eof, wait: false)
+          @session.type(new + tail)
+          @session.move_to(*(((row * screen.cols) + col + new.size) % (screen.rows * screen.cols)).divmod(screen.cols))
+          @message = nil
+        end
+      end
+
       # Keys that must get through a locked keyboard rather than wait.
-      IMMEDIATE = %i[reset attn sysreq].freeze
+      # :escape is Reset while the keyboard is locked, otherwise Clear (see press).
+      IMMEDIATE = %i[reset attn sysreq escape].freeze
 
       def press(key)
         enqueue(input: !IMMEDIATE.include?(key)) do
+          was_locked = locked?
+          key = was_locked ? :reset : :clear if key == :escape
           @insert_mode = !@insert_mode if key == :insert
-          @aid_sent_at = nil if key == :reset # stop waiting for the host
+          reset_keyboard if key == :reset
           send_key(key)
+          cursor_to_input_field if key == :reset && was_locked
         end
+      end
+
+      # After a Reset unlocks the keyboard: if the cursor sits where you can't
+      # type (the usual cause of X -f), Tab it to the next input field.
+      def cursor_to_input_field
+        screen = @session.screen
+        return if screen.input_fields.empty?
+        return if screen.field_at(screen.cursor_row, screen.cursor_col)&.input?
+
+        @session.press(:tab, wait: false)
+      rescue Error
+        nil
+      end
+
+      # The keyboard won't take keys: the host hasn't answered yet, it locked
+      # the keyboard (X SYSTEM), or an error locked it (X -f).
+      def locked?
+        return false unless connected?
+
+        host_busy? || keyboard_error? || @typeahead.any?
+      end
+
+      # Reset: stop waiting for the host and drop the keys queued meanwhile,
+      # so they don't all go off once the keyboard unlocks.
+      def reset_keyboard
+        @aid_sent_at = nil
+        dropped = @typeahead.size
+        @typeahead.clear
+        @message = "Reset - #{dropped} queued key#{'s' unless dropped == 1} dropped" if dropped.positive?
       end
 
       # On the worker thread: sends a key. AID keys save the screen to the
@@ -209,20 +277,28 @@ module Tn3270
         @connect_attempt = nil
         @queue << :stop
         @worker.join(3)
-        @session.close
+        @session&.close
       rescue StandardError
         nil
       end
 
       private
 
+      # Engines start one at a time (every tab has its own): each takes the
+      # first free attach port, and two starting together could pick the same.
+      ENGINE_START = Mutex.new
+
       def new_session(rows, cols)
         @rows = rows
         @cols = cols
         @snapshot = nil
         @signature = nil
+        ENGINE_START.synchronize { start_session(rows, cols) }
+      end
+
+      def start_session(rows, cols)
         port = attach_port_to_use
-        session = Session.new(rows: rows, cols: cols, exe: @config["engine"], script_port: port)
+        session = no_aid_wait(Session.new(rows: rows, cols: cols, exe: @config["engine"], script_port: port))
         @attach_port = port
         session
       rescue Error => e
@@ -231,7 +307,22 @@ module Tn3270
         # The port couldn't be used: carry on, without scripts attaching.
         @message = "Scripts can't attach: #{e.message}"
         @attach_port = nil
-        Session.new(rows: rows, cols: cols, exe: @config["engine"])
+        no_aid_wait(Session.new(rows: rows, cols: cols, exe: @config["engine"]))
+      end
+
+      # Session > Allow Scripts to Attach was switched since the engine started.
+      # (Any free port will do: with several tabs, each has its own.)
+      def attach_changed? = wanted_port.nil? != @attach_port.nil?
+
+      # By default the engine's Enter, PF, PA... don't return until the host
+      # answers, which would stall this worker for that long: no type-ahead,
+      # and no Reset (Esc) to unlock a keyboard the host has locked. With
+      # aidWait off they return at once; the worker watches for the answer.
+      def no_aid_wait(session)
+        session.raw("Set(aidWait,false)")
+        session
+      rescue Error
+        session # an engine too old for the setting: carry on as before
       end
 
       # The port scripts attach to, when Session > Allow Scripts to Attach is on.
@@ -292,17 +383,32 @@ module Tn3270
 
       def keyboard_error?
         st = @session.engine.last_status
-        st&.connected? && st.error?
+        st&.connected? && (st.error? || operator_error?)
       end
+
+      # Locked because of something typed where it can't go (a protected spot,
+      # a letter in a numeric field): "X -f" on a real terminal. The engine
+      # reports it as an ordinary lock, so it's recognised by its error message
+      # and remembered until the keyboard unlocks.
+      def operator_error?
+        return false unless @operator_error
+
+        st = @session.engine.last_status
+        @operator_error = false unless st&.connected? && st.keyboard_locked?
+        @operator_error
+      end
+      public :operator_error? # the status bar shows it
 
       # ---- worker thread -------------------------------------------------------
 
       def work
         poll_every = @config["poll_ms"] / 1000.0
+        start_engine
         loop do
           waiting = @aid_sent_at || @typeahead.any?
           job = pop(waiting ? FAST_POLL : poll_every)
           break if job == :stop
+          next unless @session || start_engine # couldn't start: jobs wait for one that can
 
           # Run this job and any that queued up behind it before redrawing.
           while job && job != :stop
@@ -316,6 +422,21 @@ module Tn3270
           flush_typeahead
           auto_enter_tick
         end
+      end
+
+      # Starts the engine (tried again every few seconds if it fails, e.g. no
+      # ws3270 installed). Returns the session, or nil.
+      def start_engine
+        now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        return nil if @engine_tried_at && now - @engine_tried_at < 5
+
+        @engine_tried_at = now
+        @session = new_session(@rows, @cols)
+      rescue Error => e
+        @message = e.message
+        nil
+      ensure
+        notify
       end
 
       # The auto Enter loop's next step, checked on every poll.
@@ -402,6 +523,11 @@ module Tn3270
         yield
       rescue Error, ArgumentError => e
         @connecting_since = nil
+        if e.message.match?(/operator error/i)
+          @operator_error = true
+          @message = "Keyboard locked: you can't type there. Reset unlocks it."
+          return notify
+        end
         @message = @gave_up || explain(e.message.sub(/\A\w+\(.*?\): /, ""))
         @gave_up = nil
         revive_engine
@@ -453,9 +579,11 @@ module Tn3270
       end
 
       def refresh
-        time_response
         lines = @session.engine.run("ReadBuffer(Ascii)")
         status = @session.engine.last_status
+        # After reading the screen, so a screen with the host's answer is never
+        # shown while the keyboard still counts as waiting for it.
+        time_response
         sig = [lines, status&.raw.to_s.split[0..9], @insert_mode].hash
         return if sig == @signature
 

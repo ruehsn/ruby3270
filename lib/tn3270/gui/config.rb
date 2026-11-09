@@ -38,6 +38,10 @@ module Tn3270
         "numeric_lock" => true, # numeric fields only accept 0-9 . -
         "caps" => false, # the app's own Caps Lock (status bar button); doesn't touch the keyboard's
         "crosshair" => false, # highlight the cursor's row and column
+        "spell_check" => true, # Windows: red wavy underline under misspelled words in long input fields
+        "spell_min_field" => 20, # ...fields at least this long (shorter ones usually hold codes)
+        "spell_language" => nil, # e.g. "en-GB"; nil = the Windows display language
+        "spell_ignore" => [], # words never flagged ("Ignore" on the right-click menu adds here)
         "custom_title_bar" => true, # Windows: menus drawn inside the title bar, VS Code style
         "lock_ratio" => true, # Windows: resizing keeps the window the shape of the screen, so there's no empty band
         "key_bar" => false, # the on-screen PF / Reset / Clear... key bar
@@ -45,12 +49,14 @@ module Tn3270
         "personal_snippets" => nil, # your snippet file (nil: ~/.ruby3270-snippets.yml)
         "snippet_files" => [], # shared snippet files or folders, e.g. a team file on a network drive
         "snippet_wait_seconds" => 30, # how long {wait:TEXT} in a snippet waits
+        "single_instance" => true, # a second launch opens its session as a tab in the running app
         "allow_attach" => true, # let scripts on this computer drive the open session (Tn3270::Session.attach)
         "script_port" => 3271, # ...on this port, on this computer only (127.0.0.1)
         "hide_menu_bar" => false, # without the custom title bar: menus open from the ☰ button in the status bar
         "last_connection" => nil, # name of the connection the status-bar button reconnects to
         "desktop_shortcuts" => true, # Windows: saving a connection puts a shortcut to it on the desktop
         "recent" => [], # connection names, most recently used first (orders the Session menu)
+        "welcome_imported" => nil, # the welcome.yml the first launch imported (see SettingsTransfer)
         "keys" => {}, # key binding overrides: { "F13" => "pf13", "Escape" => "" }
         "connections" => [DEFAULT_CONNECTION]
       }.freeze

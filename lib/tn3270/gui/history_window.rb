@@ -90,6 +90,17 @@ module Tn3270
         Win32.focus(@win) if @open
       end
 
+      # The main window switched tabs: show that session's history.
+      def controller=(controller)
+        return if controller.equal?(@controller)
+
+        @controller = controller
+        @current = nil
+        @selection = nil
+        @cache = {}
+        refresh
+      end
+
       # Highlights Find matches in the preview (nil term clears them).
       def highlight(term, match_case)
         @find = term.to_s.empty? ? nil : [term, match_case]
@@ -196,6 +207,7 @@ module Tn3270
         closed
         close_window(@win)
       end
+      public :close # the main window closes it when it goes
 
       def closed
         return unless @open

@@ -119,6 +119,43 @@ module Tn3270
       end
     end
 
+    # One line of text to type, e.g. Rename Tab. on_ok gets the text.
+    class TextDialog
+      include DialogSupport
+
+      def initialize(title, label, text, on_ok:)
+        @title = title
+        @label = label
+        @text = text.to_s
+        @on_ok = on_ok
+      end
+
+      def show
+        @win = Ui.window(@title, 420, 90)
+        UI.window_on_closing(@win) { 1 }
+        box = Ui.vbox
+        form = Ui.form
+        @entry = Ui.form_row(form, @label, Ui.entry)
+        UI.entry_set_text(@entry, @text)
+        Ui.add(box, form)
+        row = Ui.add(box, Ui.hbox)
+        Ui.add(row, Ui.label(""), stretchy: true)
+        Ui.add(row, Ui.button("OK") { ok })
+        Ui.add(row, Ui.button("Cancel") { close_window(@win) })
+        UI.window_set_child(@win, box)
+        show_window(@win)
+        Win32.focus_control(@entry)
+      end
+
+      private
+
+      def ok
+        text = Ui.entry_text(@entry)
+        close_window(@win)
+        @on_ok.call(text)
+      end
+    end
+
     # Snippets sidebar > Files: your own snippet file plus shared files and
     # folders (e.g. a team file on a network drive).
     class SnippetFilesDialog

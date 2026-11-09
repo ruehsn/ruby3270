@@ -11,15 +11,21 @@ require_relative "dialogs"
 require_relative "history_window"
 require_relative "find_window"
 require_relative "snippet_panel"
+require_relative "spell_ui"
 require_relative "win32"
+require_relative "tab"
+require_relative "settings_transfer"
 
 module Tn3270
   module Gui
-    # The desktop window: a screen that scales with the window, optional PF
-    # key bar, and a status bar with a menu button and a connect button.
-    class App
+    # One desktop window: a strip of session tabs, the active tab's screen
+    # (it scales with the window), an optional PF key bar, and a status bar
+    # with a menu button and a connect button. Program owns the windows and
+    # the menus they share; each Tab owns its connection.
+    class TerminalWindow
       include ScreenPainter
       include SnippetPanel
+      include SpellUi
 
       STATUS_BG = [0x1C, 0x22, 0x2B].freeze
       CURSOR = [0xFF, 0xFF, 0xFF].freeze
@@ -42,102 +48,491 @@ module Tn3270
       BUTTON_W = 46
       STATUS_H = 26 # status bar height in pixels
       STATUS_FONT_SIZE = 9.5
-      RECENT_SLOTS = 8 # saved sessions listed in the Session menu
-      RECENT_FIRST = 4 # their position in the Session menu: after Connections, Connect/Disconnect, Allow Scripts, separator
+      TAB_STRIP_H = 32 # without the custom title bar, the tabs get a row of their own
+      CAPTION_MIN = 48 # title bar width kept free of tabs, for dragging the window
       UI_FONT = Config::WINDOWS ? "Segoe UI" : "Sans"
       UI_SIZE = 9.0
-      PUMP_MS = 25 # how often the main thread checks for screen changes
+      SCREEN_PAD = 5 # blank margin (pixels) around the mainframe screen
 
-      def initialize(host: nil, session: nil)
-        @config = Config.load
-        @bindings = Keymap.bindings(@config["keys"])
+      attr_reader :tabs
+
+      # `tabs`: the tabs it starts with (moved from another window), or nil
+      # for one new, empty tab.
+      def initialize(program, tabs: nil)
+        @program = program
+        @config = program.config
         @tap = Keymap::ModifierTap.new { |mod| Win32.modifier_side(mod) }
-        @controller = Controller.new(@config, on_change: -> { @dirty = true })
-        @initial_host = host
-        @initial_session = session
-        @selection = nil # [row1, col1, row2, col2]
+        @tabs = tabs ? tabs.dup : [Tab.new(@config)]
+        @tab = @tabs.first
+        @controller = @tab.controller
+        @selection = @tab.selection # [row1, col1, row2, col2]
         @drag_anchor = nil
         @status_hits = {}
+        @tab_hits = []
+        @start_hits = []
         @history_window = nil
         @painter = Painter.new
-        @dirty = false
-        @menu = {} # menu items by name; they hold their click handlers
       end
 
-      def launch
-        UI.init
-        build_menus
+      # Builds the window and shows it, at `rect` ([left, top, width, height]
+      # in outer pixels) if given.
+      def launch(rect: nil)
         build_window
         Win32.set_icon(@window)
         if Win32.available?
           @menu_bar = Win32::MenuBar.new(@window)
           @title_bar = Win32::TitleBar.new(@window)
           @title_bar.install if @config["custom_title_bar"] && @menu_bar.usable?
-          @menu_bar.reserve_slots(0, RECENT_FIRST, RECENT_SLOTS)
+          @menu_bar.reserve_slots(0, Program::RECENT_FIRST, Program::RECENT_SLOTS)
           refresh_recent_menu
         end
         @menu_bar.visible = false if menu_bar_hidden?
         @sizing = Win32::Sizing.new(@window) { |edge, rect| shaped_rect(edge, rect) } if Win32.available?
         toggle_keybar(true) if @config["key_bar"]
+        Win32.place(@window, *rect) if rect && Win32.available?
         @reshape = true # start in the screen's shape
-        connect_at_start
-        # The worker thread only sets @dirty; libui may only be used from here.
-        UI.timer(PUMP_MS) do
-          pump
-          1
-        end
         UI.control_show(@window)
-        UI.main
-        quit_app
+        focus_screen
+      end
+
+      # Runs one of this window's commands (the menus and Program use this).
+      def command(name, *args) = send(name, *args)
+
+      def ui_window = @window
+      def hwnd_ptr = @window.to_i # libui's window pointer, as menu clicks report it
+      def hwnd_i = Win32.hwnd(@window).to_i
+
+      # Called by Program's timer. Redraws if a tab's worker saw a change, and
+      # reshapes the window when something asked for it.
+      def pump
+        # (Sizes are known after the first draw; until then the request waits.)
+        if @reshape && @area_size && !@program.floating?(self)
+          keep = @reshape == :height ? :height : :width
+          @reshape = false
+          fit_window_to_screen(keep: keep)
+        end
+        tooltip_tick
+        # Every tab, not just the one shown: their status lights are in the strip.
+        return unless @tabs.map(&:take_dirty).any?
+
+        refresh_spelling(redraw: false)
+        redraw
+        @history_window&.refresh
+        @find_window&.refresh
+      end
+
+      # Closes the window without ending its sessions (they were moved away).
+      def destroy
+        close_child_windows
+        UI.control_destroy(@window)
+      end
+
+      # ---- tabs ------------------------------------------------------------------
+
+      # Puts a tab in this window (new, or moved from another) and shows it.
+      def add_tab(tab, index: @tabs.size, select: true)
+        @tabs.insert(index.clamp(0, @tabs.size), tab)
+        select_tab(tab) if select
+        redraw
+      end
+
+      # Takes a tab out of this window (closed, or moving to another). Its
+      # session keeps running. The tab next to it is shown instead.
+      def remove_tab(tab)
+        i = @tabs.index(tab)
+        return unless i
+
+        tab.selection = @selection if tab.equal?(@tab)
+        @tabs.delete_at(i)
+        if tab.equal?(@tab)
+          @tab = nil
+          select_tab(@tabs[[i, @tabs.size - 1].min]) unless @tabs.empty?
+        end
+        redraw
+      end
+
+      # The tab strip in screen pixels: [left, top, right, bottom], or nil
+      # before the first draw.
+      def strip_rect_px
+        return nil unless @strip && Win32.available?
+
+        x0, x1, y0, y1 = @strip
+        s = px_scale
+        l, t = Win32.client_to_screen(@area.control, x0 * s, y0 * s)
+        [l, t, l + ((x1 - x0) * s).round, t + ((y1 - y0) * s).round]
+      end
+
+      def strip_x0_px = strip_rect_px&.first
+
+      # Screen x of a tab's left edge.
+      def tab_left_px(tab)
+        i = @tabs.index(tab)
+        return nil unless i && @strip
+
+        _, lefts = TabStrip.layout(@tabs.size, @strip[0], @strip[1])
+        Win32.client_to_screen(@area.control, lefts[i] * px_scale, 0)[0]
+      end
+
+      # Where a tab dropped in at screen x would go.
+      def insert_index_px(px)
+        return @tabs.size unless @strip
+
+        width, lefts = TabStrip.layout(@tabs.size, @strip[0], @strip[1])
+        TabStrip.insert_index(lefts, width, area_x(px))
+      end
+
+      # A tab being dragged along the strip with its left edge at screen x
+      # `left_px` (nil: the drag is over). The other tabs make way.
+      def drag_tab(tab, left_px)
+        if left_px.nil? || !@strip
+          @drag_x = nil
+          return redraw
+        end
+
+        @drag_x = area_x(left_px)
+        width, lefts = TabStrip.layout(@tabs.size, @strip[0], @strip[1])
+        from = @tabs.index(tab)
+        to = from && TabStrip.drop_index(lefts, width, from, @drag_x)
+        @tabs = TabStrip.move(@tabs, from, to) if from && to != from
+        redraw
       end
 
       private
 
       attr_reader :controller, :config
 
-      # Redraws if the worker saw a change since the last tick, and reshapes
-      # the window when something asked for it.
-      def pump
-        # (Sizes are known after the first draw; until then the request waits.)
-        if @reshape && @area_size
-          @reshape = false
-          fit_window_to_screen
-        end
-        tooltip_tick
-        return unless @dirty
+      def bindings = @program.bindings
 
-        @dirty = false
-        # The loop can stop by itself (disconnect, keyboard error): keep the menu in step.
-        sync_auto_enter_item
-        redraw
-        @history_window&.refresh
+      def select_tab(tab)
+        return if tab.nil? || tab.equal?(@tab)
+
+        @tab&.selection = @selection
+        @tab = tab
+        @controller = tab.controller
+        @selection = tab.selection
+        @drag_anchor = nil
+        @picker = nil
+        @find[:index] = nil if @find
+        @history_window&.controller = @controller
         @find_window&.refresh
+        refresh_spelling(redraw: false)
+        sync_menu_checks
+        redraw
+      end
+
+      def new_tab
+        tab = Tab.new(@config)
+        tab.opened_from = @tab
+        add_tab(tab, index: (@tabs.index(@tab) || -1) + 1)
+        tab
+      end
+
+      # A new tab on the same session as `tab` (right-click > Duplicate Tab).
+      def duplicate_tab(tab = @tab)
+        return unless tab&.controller&.last_target
+
+        new_tab
+        duplicate_session(tab)
+      end
+
+      # Connects this tab to the session `source` is on.
+      def duplicate_session(source)
+        target = source.controller.last_target
+        @config.connections.include?(target) ? connect_to(target) : @controller.connect(target)
+      end
+
+      # The tab whose session the new tab page offers to open again: the one
+      # this tab was opened from, if it's still open and has a session.
+      def duplicate_source
+        src = @tab&.opened_from
+        src && src.controller.last_target && @program.open_tab?(src) ? src : nil
+      end
+
+      def rename_tab(tab = @tab)
+        return unless tab
+
+        @rename_dialog = TextDialog.new("Rename Tab", "Name (empty: the session's name)", tab.custom_title || tab.title,
+                                        on_ok: lambda { |text|
+                                          tab.custom_title = text
+                                          update_title(@controller.snapshot) if tab.equal?(@tab)
+                                          redraw
+                                        })
+        @rename_dialog.show
+      end
+
+      # Closes a tab and ends its session. The last tab closes the window.
+      def close_tab(tab = @tab)
+        return unless tab
+        return close_window if @tabs.size == 1
+
+        remove_tab(tab)
+        @program.retire(tab)
+      end
+
+      # Like the window's close button: the sessions in it end.
+      def close_window
+        if Win32.available?
+          @title_bar.close # posts WM_CLOSE, so on_closing runs as usual
+        else
+          close_child_windows
+          @program.window_closed(self)
+          UI.control_destroy(@window)
+        end
+      end
+
+      def step_tab(step)
+        i = @tabs.index(@tab) || 0
+        select_tab(@tabs[(i + step) % @tabs.size])
+      end
+
+      def next_tab = step_tab(1)
+      def prev_tab = step_tab(-1)
+      def tab_to_new_window(tab = @tab) = @program.tab_to_new_window(self, tab)
+      def new_window = @program.new_window
+
+      def close_child_windows
+        @history_window.close if @history_window&.open?
+        @find_window.close if @find_window&.open?
+      end
+
+      # Pixels per drawing unit (display scaling).
+      def px_scale
+        return 1.0 unless @area_size && Win32.available? && @area_size[0].positive?
+
+        Win32.client_size(@area.control)[0] / @area_size[0].to_f
+      end
+
+      # Screen x (pixels) -> drawing area x.
+      def area_x(px) = (px - Win32.client_to_screen(@area.control, 0, 0)[0]) / px_scale
+
+      def focus_screen = Win32.focus_control(@area.control)
+
+      def sync_menu_checks
+        @program.sync_check(:auto_enter, @controller.auto_enter?)
+      end
+
+      # ---- drawing the tabs ----------------------------------------------------------
+
+      TAB_HOVER = [0xFF, 0xFF, 0xFF].freeze
+
+      # Without the custom title bar: a row across the top for the tabs.
+      def draw_strip_row(w)
+        @painter.fill_rect(0, 0, w, TAB_STRIP_H, TITLE_BG)
+        draw_tabs(8, w - 8, 0, TAB_STRIP_H)
+      end
+
+      # The tabs between x0 and x1, then the + button. A tab being dragged
+      # follows the mouse, drawn last so it's on top.
+      def draw_tabs(x0, x1, top, h)
+        @strip = [x0, x1, top, top + h]
+        @tab_hits = []
+        width, lefts = TabStrip.layout(@tabs.size, x0, x1)
+        dragged = @program.strip_drag(self)
+        @tabs.each_with_index do |tab, i|
+          next if tab.equal?(dragged) && @drag_x
+          next if lefts[i] + width > x1 + TabStrip::NEW_W # no room left
+
+          draw_tab(tab, i, lefts[i], top, width, h)
+        end
+        draw_new_tab_button((lefts.last || x0) + (lefts.empty? ? 0 : width), top, h)
+        return unless dragged && @drag_x
+
+        draw_tab(dragged, @tabs.index(dragged), @drag_x.clamp(x0, [x1 - width, x0].max), top, width, h)
+      end
+
+      def draw_tab(tab, index, x, top, width, h)
+        pt = @painter
+        y = top + 5
+        th = h - 5
+        active = tab.equal?(@tab)
+        hover = @tab_hover && @tab_hover[1] == index && @tab_hover[0] != :new_tab
+        if active
+          pt.fill_rect(x, y, width, th, error_locked? ? LOCKED_BACKGROUND : BACKGROUND)
+        elsif hover
+          pt.fill_rect(x, y, width, th, TAB_HOVER, 0.07)
+        else
+          pt.fill_rect(x + width - 1, y + 7, 1, th - 14, TITLE_MUTED, 0.35) # divider
+        end
+        color = { connected: ONLINE, connecting: CONNECTING }[tab.state]
+        cy = y + (th / 2.0)
+        color ? pt.fill_circle(x + 13, cy, 3.5, color) : pt.stroke_circle(x + 13, cy, 3.2, OFFLINE, 1.2)
+        text_y = y + ((th - ui_line_h) / 2.0)
+        ui_text(x + 23, text_y, fit_text(tab.title, width - 23 - 26), active ? WHITE : TITLE_FG) if width >= 60
+        if (active || hover) && width >= 60
+          cx = x + width - 15
+          if @tab_hover == [:tab_close, index]
+            pt.fill_rect(cx - 8, cy - 8, 16, 16, TAB_HOVER, 0.14)
+          end
+          pt.polyline([cx - 4, cy - 4, cx + 4, cy + 4], TITLE_FG)
+          pt.polyline([cx + 4, cy - 4, cx - 4, cy + 4], TITLE_FG)
+          @tab_hits << [cx - 8, cy - 8, 16, 16, [:tab_close, index]]
+        end
+        @tab_hits << [x, y, width, th, [:tab, index]]
+      end
+
+      def draw_new_tab_button(x, top, h)
+        cx = x + (TabStrip::NEW_W / 2.0)
+        cy = top + 5 + ((h - 5) / 2.0)
+        @painter.fill_rect(cx - 12, cy - 12, 24, 24, TAB_HOVER, 0.10) if @tab_hover == [:new_tab]
+        @painter.fill_rect(cx - 6, cy - 0.5, 12, 1.2, TITLE_FG)
+        @painter.fill_rect(cx - 0.5, cy - 6, 1.2, 12, TITLE_FG)
+        @tab_hits << [cx - 12, cy - 12, 24, 24, [:new_tab]]
+      end
+
+      # ---- tab clicks ------------------------------------------------------------------
+
+      def tab_hit(event) = hit_at(@tab_hits, event)
+
+      # A press on a tab shows it and may start a drag; × and + act on release.
+      def tab_mouse_down(event, hit)
+        case hit[0]
+        when :tab
+          tab = @tabs[hit[1]]
+          select_tab(tab)
+          # The release may come anywhere (even over another window): it
+          # mustn't count as a click on whatever is under it here.
+          @tab_down = true
+          if event[:count].to_i < 2
+            @program.begin_tab_drag(self, tab)
+          else
+            UI.queue_main { rename_tab(tab) } # double-click: rename it
+          end
+        else
+          @tab_pressed = hit
+        end
+      end
+
+      def tab_mouse_up(event)
+        pressed = @tab_pressed
+        @tab_pressed = nil
+        return unless tab_hit(event) == pressed
+
+        case pressed[0]
+        when :tab_close then UI.queue_main { close_tab(@tabs[pressed[1]]) }
+        when :new_tab then new_tab
+        end
+      end
+
+      # Middle-click on a tab closes it, as in a browser.
+      def middle_click(event)
+        hit = tab_hit(event)
+        return unless hit && %i[tab tab_close].include?(hit[0])
+
+        tab = @tabs[hit[1]]
+        UI.queue_main { close_tab(tab) }
+      end
+
+      def tab_hover_at(event)
+        hit = tab_hit(event)
+        return if hit == @tab_hover
+
+        @tab_hover = hit
+        redraw
+      end
+
+      # Right-click on a tab.
+      def tab_menu(tab)
+        many = @tabs.size > 1
+        items = ["New Tab", ["Duplicate Tab", !tab.controller.last_target.nil?], "Rename Tab...",
+                 ["Move Tab to New Window", many], nil, "Close Tab", ["Close Other Tabs", many]]
+        case Win32.choose(@area.control, items)
+        when 0 then new_tab
+        when 1 then duplicate_tab(tab)
+        when 2 then rename_tab(tab)
+        when 3 then tab_to_new_window(tab)
+        when 5 then close_tab(tab)
+        when 6 then (@tabs - [tab]).each { |t| close_tab(t) }
+        end
+      end
+
+      # ---- the new tab page --------------------------------------------------------------
+      # A tab that hasn't connected yet lists the saved sessions to open.
+
+      START_W = 460
+      START_ROW_H = 44
+
+      # (The engine reports a blank screen even before connecting, so "new"
+      # means the tab has never been asked to connect anywhere.)
+      def start_page? = @controller.last_target.nil? && !@controller.connecting?
+
+      def draw_start_page(w)
+        pt = @painter
+        @start_hits = []
+        sessions = recent_connections.first(9)
+        x = [((w - panel_w - START_W) / 2.0), 16].max
+        y = header_h + 48
+        pt.text(x, y, START_W, "Open a session", WHITE, UI_FONT, UI_SIZE * 1.5, bold: true)
+        y += 40
+        if (src = duplicate_source)
+          hover = @start_hover == [:duplicate]
+          pt.fill_rect(x, y, START_W, START_ROW_H - 4, SELECTION, hover ? 0.30 : 0.18)
+          ui_text(x + 12, y + 12, "D", TITLE_MUTED)
+          ui_text(x + 36, y + 4, fit_text("Duplicate \"#{src.title}\"", START_W - 48), WHITE)
+          ui_text(x + 36, y + 4 + ui_line_h, "Another connection to the session in the tab you came from", TITLE_MUTED)
+          @start_hits << [x, y, START_W, START_ROW_H - 4, [:duplicate]]
+          y += START_ROW_H + 12
+        end
+        if sessions.empty?
+          ui_text(x, y, "No saved sessions yet.", TITLE_MUTED)
+          y += 30
+        end
+        sessions.each_with_index do |conn, i|
+          hover = @start_hover == [:session, i]
+          pt.fill_rect(x, y, START_W, START_ROW_H - 4, TAB_HOVER, hover ? 0.10 : 0.04)
+          ui_text(x + 12, y + 12, (i + 1).to_s, TITLE_MUTED)
+          ui_text(x + 36, y + 4, fit_text(conn["name"].to_s, START_W - 48), WHITE)
+          ui_text(x + 36, y + 4 + ui_line_h, fit_text(Config.display_string(conn), START_W - 48), TITLE_MUTED)
+          @start_hits << [x, y, START_W, START_ROW_H - 4, [:session, i]]
+          y += START_ROW_H
+        end
+        label = "Connections..."
+        bw = FontMetrics.text_width(UI_FONT, UI_SIZE, label) + 24
+        hover = @start_hover == [:connections]
+        pt.fill_rect(x, y + 8, bw, 28, TAB_HOVER, hover ? 0.16 : 0.08)
+        ui_text(x + 12, y + 14, label, TITLE_FG)
+        @start_hits << [x, y + 8, bw, 28, [:connections]]
+        hint = "Press 1-#{[sessions.size, 1].max} to open, or #{keys_label('new_tab')} for another tab"
+        ui_text(x + bw + 16, y + 14, hint, TITLE_MUTED) unless sessions.empty?
+      end
+
+      def start_page_click(hit)
+        case hit[0]
+        when :session then (conn = recent_connections[hit[1]]) && connect_to(conn)
+        when :connections then UI.queue_main { connections_dialog }
+        when :duplicate then (src = duplicate_source) && duplicate_session(src)
+        end
+      end
+
+      # 1-9 on the new tab page opens that session, D duplicates. True if it did.
+      def start_page_number(char)
+        if char.casecmp?("d") && (src = duplicate_source)
+          duplicate_session(src)
+          return true
+        end
+        return false unless char.match?(/\A[1-9]\z/)
+
+        conn = recent_connections.first(9)[char.to_i - 1]
+        conn && connect_to(conn)
+        !conn.nil?
+      end
+
+      def start_hover_at(event)
+        hit = start_page? ? hit_at(@start_hits, event) : nil
+        return if hit == @start_hover
+
+        @start_hover = hit
+        redraw
       end
 
       # Status bar ENTER button / Keys > Auto Enter: press Enter over and over,
       # a pause after each answer, until switched off.
       def set_auto_enter(on)
         @controller.auto_enter = on
-        sync_auto_enter_item
+        sync_menu_checks
         redraw
       end
 
-      def sync_auto_enter_item
-        on = @controller.auto_enter?
-        return if @auto_enter_shown == on
-
-        @auto_enter_shown = on
-        UI.menu_item_set_checked(@auto_enter_item, Ui.flag(on))
-      end
-
       def redraw = @area&.redraw
-
-      def quit_app
-        return if @quitting
-
-        @quitting = true
-        @controller.shutdown
-      end
 
       # The menus are drawn in our own title bar (Windows).
       def custom_title? = @title_bar&.installed? || false
@@ -149,103 +544,23 @@ module Tn3270
 
       def title_h = custom_title? ? TITLE_H : 0
 
+      # Height above the screen: the title bar (which holds the tabs), or
+      # without it the row of tabs.
+      def strip_h = custom_title? ? 0 : TAB_STRIP_H
+      def header_h = title_h + strip_h
+
       def grid_size
         scr = @controller.snapshot
         scr ? [scr.rows, scr.cols] : [@controller.rows, @controller.cols]
       end
 
-      # ---- menus ---------------------------------------------------------------
-
-      def item(menu, label, &block)
-        it = UI.menu_append_item(menu, label)
-        UI.menu_item_on_clicked(it) { block.call; nil }
-        @menu[label] = it
-      end
-
-      def check_item(menu, label, checked, &block)
-        it = UI.menu_append_check_item(menu, label)
-        UI.menu_item_set_checked(it, Ui.flag(checked))
-        UI.menu_item_on_clicked(it) { block.call(UI.menu_item_checked(it) == 1); nil }
-        @menu[label] = it
-      end
-
-      def build_menus
-        m = UI.new_menu("Session")
-        item(m, "Connections...") { connections_dialog }
-        item(m, "Connect / Disconnect") { toggle_connection }
-        check_item(m, "Allow Scripts to Attach", @config["allow_attach"]) do |on|
-          set_option("allow_attach", on)
-          @controller.attach_setting_changed
-        end
-        UI.menu_append_separator(m)
-        # Placeholders for saved sessions; their text is filled in on Windows
-        # (see refresh_recent_menu).
-        if Win32.available?
-          RECENT_SLOTS.times { |i| item(m, "Session #{i + 1}") { connect_recent(i) } }
-        end
-        # libui puts a separator before Quit by itself.
-        @menu[:quit] = UI.menu_append_quit_item(m)
-        UI.on_should_quit do
-          quit_app
-          UI.control_destroy(@window)
-          1
-        end
-
-        m = UI.new_menu("Edit")
-        item(m, "Copy (selection or screen)") { copy }
-        item(m, "Copy Whole Screen") { copy_screen }
-        item(m, "Paste") { paste }
-        UI.menu_append_separator(m)
-        item(m, "Find...") { show_find }
-        UI.menu_append_separator(m)
-        item(m, "Snippets: Quick Pick...") { open_picker }
-        item(m, "New Snippet from Selection...") { snippet_from_selection }
-        UI.menu_append_separator(m)
-        @caps_item = check_item(m, "Caps Lock (this app only)", @config["caps"]) { |on| set_caps(on) }
-
-        m = UI.new_menu("Keys")
-        item(m, "Keyboard Mapping...") { keys_dialog }
-        @auto_enter_item = check_item(m, "Auto Enter (press Enter every #{@controller.auto_enter_seconds.round(1)}s, to watch a job)", false) do |on|
-          set_auto_enter(on)
-        end
-        check_item(m, "Type-Ahead (queue keys while the host is busy)", @config["typeahead"]) { |on| set_option("typeahead", on) }
-        check_item(m, "Numeric Fields: Digits Only", @config["numeric_lock"]) { |on| set_option("numeric_lock", on) }
-        UI.menu_append_separator(m)
-        %i[pa1 pa2 pa3 clear attn sysreq reset erase_input].each do |k|
-          item(m, k.to_s.upcase.tr("_", " ")) { send_key(k) }
-        end
-        UI.menu_append_separator(m)
-        (13..24).each { |n| item(m, "PF#{n}") { send_key(:"pf#{n}") } }
-
-        m = UI.new_menu("View")
-        item(m, "Screen History...") { show_history }
-        item(m, "Font...") { font_dialog }
-        UI.menu_append_separator(m)
-        @crosshair_item = check_item(m, "Crosshair", @config["crosshair"]) { |on| set_crosshair(on) }
-        @keybar_item = check_item(m, "Key Bar (PF, Reset, Clear...)", @config["key_bar"]) { |on| toggle_keybar(on) }
-        @snippet_item = check_item(m, "Snippets Sidebar", @config["snippet_bar"]) { |on| toggle_snippet_bar(on) }
-        check_item(m, "Underline Input Fields", @config["underline_input_fields"]) { |on| set_underline(on) }
-        if Win32.available?
-          UI.menu_append_separator(m)
-          check_item(m, "Lock Window Shape to the Screen", @config["lock_ratio"]) { |on| set_lock_ratio(on) }
-        end
-
-        m = UI.new_menu("Help")
-        item(m, "Keyboard...") { keyboard_help }
-        @menu[:about] = UI.menu_append_about_item(m)
-        UI.menu_item_on_clicked(@menu[:about]) do
-          msg_box("About", "ruby3270 #{Tn3270::VERSION}\nA 3270 terminal in Ruby\nEngine: s3270 (x3270 suite)")
-          nil
-        end
-      end
-
       # ---- window --------------------------------------------------------------
 
       def build_window
-        @window = Ui.window("ruby3270 - not connected", 1400, 860, menubar: true, margined: false)
+        @window = Ui.window("ruby3270", 1400, 860, menubar: true, margined: false)
         UI.window_on_closing(@window) do
-          quit_app
-          UI.quit
+          close_child_windows
+          @program.window_closed(self)
           1
         end
 
@@ -253,6 +568,7 @@ module Tn3270
         @area = Ui::Area.new(draw: ->(p) { draw(p) }, mouse: ->(e) { mouse(e) },
                              key: ->(e) { key(e) }, crossed: lambda { |_left|
                                title_hover(nil)
+                               @tab_hover = nil
                                hide_tooltip
                              })
         Ui.add(box, @area.control, stretchy: true)
@@ -289,8 +605,19 @@ module Tn3270
       # left to right. The status bar is pinned to the bottom of the window.
       def metrics(width, height)
         rows, cols = grid_size
-        top = title_h + 4
-        fit_grid(rows, cols, 0, top, width - panel_w, height - top - STATUS_H - 4, @config["font"], top: true)
+        top = header_h + 4 + SCREEN_PAD
+        fit_grid(rows, cols, SCREEN_PAD, top, width - panel_w - (2 * SCREEN_PAD),
+                 height - top - STATUS_H - 4 - SCREEN_PAD, @config["font"], top: true)
+      end
+
+      # Background while the keyboard is locked by an error (X -f), until Reset.
+      LOCKED_BACKGROUND = [0x2E, 0x0C, 0x10].freeze
+
+      def error_locked?
+        st = @controller.snapshot&.status
+        return false unless st&.connected?
+
+        st.error? || @controller.operator_error?
       end
 
       def draw(params)
@@ -302,8 +629,8 @@ module Tn3270
         # A new screen size (another host) reshapes the window to match.
         @reshape = true if @shaped_for && @shaped_for != grid_size
         @shaped_for ||= grid_size
-        pt.fill_rect(0, 0, w, h, BACKGROUND)
-        draw_title_bar(w) if custom_title?
+        pt.fill_rect(0, 0, w, h, error_locked? ? LOCKED_BACKGROUND : BACKGROUND)
+        custom_title? ? draw_title_bar(w) : draw_strip_row(w)
 
         size, cw, ch, ox, oy = metrics(w, h)
         scr = @controller.snapshot
@@ -312,12 +639,14 @@ module Tn3270
         if scr
           draw_crosshair(scr, cw, ch, ox, oy) if @config["crosshair"] && scr.status&.connected?
           paint_cells(pt, scr, size, cw, ch, ox, oy, font, underline: @config["underline_input_fields"])
+          draw_misspellings(scr, cw, ch, ox, oy)
           draw_find_matches(scr, cw, ch, ox, oy)
           draw_cursor(scr, cw, ch, ox, oy) if scr.status&.connected?
           draw_selection(cw, ch, ox, oy)
           # Dim the last screen once the session has ended.
           pt.fill_rect(ox, oy, cw * scr.cols, ch * scr.rows, BACKGROUND, 0.6) unless scr.status&.connected?
         end
+        draw_start_page(w) if start_page?
         draw_status(scr, w, h, font)
         draw_snippet_panel(w, h) if snippet_bar_shown?
         draw_picker(w, h) if @picker
@@ -398,14 +727,18 @@ module Tn3270
                elsif @controller.connecting? then "Connecting..."
                else "Disconnected - click the dot to connect"
                end
+        unlock_key = Keymap.keys_for(bindings, "escape").first || Keymap.keys_for(bindings, "reset").first
         lock = if !connected then ""
-               elsif st.error? then "X -f"
+               elsif st.error? || @controller.operator_error? then "X -f#{" (#{unlock_key} resets)" if unlock_key}"
                elsif st.keyboard_locked? || @controller.waiting_for_host? then "X SYSTEM"
                else ""
                end
         sel = @selection ? "SELECTED - #{keys_label('copy')} to copy" : ""
         ahead = @controller.typeahead_count
-        ahead = ahead.positive? ? "TYPE-AHEAD #{ahead}" : ""
+        ahead = if ahead.zero? then ""
+                elsif !lock.empty? && unlock_key then "TYPE-AHEAD #{ahead} - #{unlock_key} resets"
+                else "TYPE-AHEAD #{ahead}"
+                end
         mid = [lock, @controller.insert_mode ? "INSERT" : "", ahead, sel, @controller.message.to_s].reject(&:empty?).join("   ")
 
         # Right side, from the edge inwards: position, response time, CAPS.
@@ -418,12 +751,6 @@ module Tn3270
           timing = t < 10 ? format("%.2fs", t) : format("%.0fs", t)
           rx -= (timing.size + 3) * cw
           status_text(rx, text_y, timing, TITLE_MUTED, size, cw, font)
-        end
-        # Scripts can attach to this session (Session > Allow Scripts to Attach).
-        if (port = @controller.attach_port)
-          label = "PORT #{port}"
-          rx -= (label.size + 3) * cw
-          status_text(rx, text_y, label, TITLE_MUTED, size, cw, font)
         end
         rx = draw_toggle(:caps, "CAPS", @config["caps"], rx - (cw * 2), y, cw, size, font, text_y)
         rx = draw_toggle(:fk, "FK", keybar_shown?, rx - cw, y, cw, size, font, text_y)
@@ -506,10 +833,7 @@ module Tn3270
         end
 
         buttons_x = w - (3 * BUTTON_W)
-        title = @title.to_s
-        tw = FontMetrics.text_width(UI_FONT, UI_SIZE, title)
-        tx = [(w - tw) / 2.0, x + 16].max
-        ui_text(tx, text_y, title, TITLE_MUTED) if tx + tw < buttons_x - 8
+        draw_tabs(x + 8, buttons_x - CAPTION_MIN, 0, TITLE_H)
 
         %i[minimize maximize close].each_with_index do |kind, i|
           bx = buttons_x + (i * BUTTON_W)
@@ -571,7 +895,9 @@ module Tn3270
       end
 
       def mouse_move(event)
-        title_hover(title_hit(event)) if custom_title?
+        tab_hover_at(event)
+        start_hover_at(event)
+        title_hover(tab_hit(event) ? nil : title_hit(event)) if custom_title?
         hover_status(event)
       end
 
@@ -628,7 +954,8 @@ module Tn3270
            "Click to #{keybar_shown? ? 'hide' : 'show'} it."]
         when :connection
           ["Connection: green = connected, amber = connecting, grey = not connected",
-           "Click to #{@controller.connected? || @controller.connecting? ? 'disconnect' : 'connect'}."]
+           "Click to #{@controller.connected? || @controller.connecting? ? 'disconnect' : 'connect'}.",
+           ("Scripts can attach to this session on port #{@controller.attach_port}." if @controller.attach_port)].compact
         when :menu
           ["Menus", "Click to open the menus."]
         when :snip
@@ -663,7 +990,7 @@ module Tn3270
         bh = (lines.size * line_h) + (2 * pad)
         if hit.is_a?(Array) # a snippet row: to the left of the sidebar
           bx = [box[0] - bw - 8, 4].max
-          by = box[1].clamp(title_h + 4, [h - STATUS_H - bh - 6, title_h + 4].max)
+          by = box[1].clamp(header_h + 4, [h - STATUS_H - bh - 6, header_h + 4].max)
         else
           bx = (box[0] + (box[2] / 2.0) - (bw / 2.0)).clamp(4, [w - bw - 4, 4].max)
           by = h - STATUS_H - bh - 6
@@ -722,11 +1049,14 @@ module Tn3270
         redraw
       end
 
-      def keys_label(action) = Keymap.keys_for(@bindings, action).first || "(unbound)"
+      def keys_label(action) = Keymap.keys_for(bindings, action).first || "(unbound)"
 
+      # The window title (taskbar) is the shown tab's saved session name, never
+      # the host address.
       def update_title(scr)
-        host = scr&.status&.host
-        title = host ? "ruby3270 - #{host}" : "ruby3270 - not connected"
+        name = @tab && (@tab.custom_title || (@tab.name && @tab.title)) # as the tab shows it: "PROD (2)"
+        live = scr&.status&.connected? || @controller.connecting?
+        title = @tab&.custom_title || (live && name) || "ruby3270"
         return if @title == title
 
         @title = title
@@ -740,9 +1070,9 @@ module Tn3270
         return true if @snip_focus && panel_key(event)
 
         tap = @tap.feed(event)
-        return perform(Keymap.action_result(@bindings[tap])) if tap && @bindings[tap]
+        return perform(Keymap.action_result(bindings[tap])) if tap && bindings[tap]
 
-        action = Keymap.translate(event, @bindings)
+        action = Keymap.translate(event, bindings)
         return false unless action
 
         perform(action)
@@ -752,10 +1082,16 @@ module Tn3270
         case action[0]
         when :history then show_history
         when :find then show_find
-        when :crosshair then set_crosshair(!@config["crosshair"])
-        when :caps then set_caps(!@config["caps"])
+        when :crosshair then @program.for_all(:set_crosshair, !@config["crosshair"])
+        when :caps then @program.for_all(:set_caps, !@config["caps"])
         when :snippet_picker then open_picker
-        when :snippet_bar then toggle_snippet_bar(!snippet_bar_shown?)
+        when :snippet_bar then @program.for_all(:toggle_snippet_bar, !snippet_bar_shown?)
+        when :new_tab then new_tab
+        when :close_tab then close_tab
+        when :new_window then new_window
+        when :next_tab then next_tab
+        when :prev_tab then prev_tab
+        when :spell_next then spell_next
         when :snippet then run_snippet_number(action[1])
         when :copy then copy
         when :paste then paste
@@ -763,6 +1099,8 @@ module Tn3270
           clear_selection
           @controller.press(action[1])
         when :type
+          return true if start_page? && start_page_number(action[1])
+
           clear_selection
           @controller.type(apply_caps(action[1]))
         end
@@ -788,6 +1126,7 @@ module Tn3270
       # libui reports every mouse event to one handler.
       def mouse(event)
         if event[:down] == 1 then mouse_down(event)
+        elsif event[:down] == 2 then middle_click(event)
         elsif event[:down] == 3 then right_click(event)
         elsif event[:up] == 1 then mouse_up(event)
         else
@@ -809,6 +1148,12 @@ module Tn3270
 
       def mouse_down(event)
         hide_tooltip
+        hit = tab_hit(event)
+        return tab_mouse_down(event, hit) if hit
+
+        hit = start_page? && hit_at(@start_hits, event)
+        return start_page_click(hit) if hit
+
         if (hit = title_hit(event))
           title_mouse_down(event, hit)
           return
@@ -826,9 +1171,15 @@ module Tn3270
       end
 
       # Right-click with a selection: copy it, clear it, and put the cursor
-      # where the pointer is. Without a selection, nothing happens.
+      # where the pointer is. Without a selection, on a misspelled word: its
+      # suggestions menu. Otherwise nothing happens.
       def right_click(event)
-        return unless @selection && @controller.snapshot
+        if (hit = tab_hit(event)) && hit[0] != :new_tab
+          tab = @tabs[hit[1]]
+          return UI.queue_main { tab_menu(tab) }
+        end
+        return unless @controller.snapshot
+        return spell_click(event) unless @selection
 
         copy
         cell = cell_at(event)
@@ -847,6 +1198,8 @@ module Tn3270
       end
 
       def mouse_up(event)
+        return @tab_down = false if @tab_down
+        return tab_mouse_up(event) if @tab_pressed
         return title_mouse_up(event) if @title_pressed
 
         anchor = @drag_anchor
@@ -860,10 +1213,10 @@ module Tn3270
           UI.queue_main do
             case hit
             when :menu then @menu_bar.popup
-            when :caps then set_caps(!@config["caps"])
-            when :fk then toggle_keybar(!keybar_shown?)
+            when :caps then @program.for_all(:set_caps, !@config["caps"])
+            when :fk then @program.for_all(:toggle_keybar, !keybar_shown?)
             when :auto_enter then set_auto_enter(!@controller.auto_enter?)
-            when :snip then toggle_snippet_bar(!snippet_bar_shown?)
+            when :snip then @program.for_all(:toggle_snippet_bar, !snippet_bar_shown?)
             else toggle_connection
             end
           end
@@ -925,7 +1278,7 @@ module Tn3270
       # Shows or hides the key bar (View menu or the FK button) and remembers it.
       def toggle_keybar(on)
         on ? Ui.show(@keybar) : Ui.hide(@keybar)
-        UI.menu_item_set_checked(@keybar_item, Ui.flag(on))
+        @program.sync_check(:key_bar, on)
         set_option("key_bar", on)
         @reshape = true
         redraw
@@ -935,7 +1288,10 @@ module Tn3270
 
       # Height of the parts of the drawing area that aren't the screen grid
       # (title bar, margins, status bar), in drawing units.
-      def chrome_h = title_h + 4 + STATUS_H + 4
+      def chrome_h = header_h + 4 + STATUS_H + 4 + (2 * SCREEN_PAD)
+
+      # Width beside the screen: the snippets sidebar and the margins.
+      def side_w = panel_w + (2 * SCREEN_PAD)
 
       # Width / height of the screen grid at any font size.
       def grid_ratio
@@ -960,12 +1316,12 @@ module Tn3270
       # Outer window height that fits the screen exactly at a given outer width (and back).
       def shaped_height(width, extras)
         extra_w, extra_h, scale = extras
-        ((width - extra_w - (panel_w * scale)) / grid_ratio) + (chrome_h * scale) + extra_h
+        ((width - extra_w - (side_w * scale)) / grid_ratio) + (chrome_h * scale) + extra_h
       end
 
       def shaped_width(height, extras)
         extra_w, extra_h, scale = extras
-        ((height - extra_h - (chrome_h * scale)) * grid_ratio) + extra_w + (panel_w * scale)
+        ((height - extra_h - (chrome_h * scale)) * grid_ratio) + extra_w + (side_w * scale)
       end
 
       WMSZ_TOP = [3, 4, 5].freeze # top, top-left, top-right
@@ -997,14 +1353,21 @@ module Tn3270
         [left, top, right, bottom]
       end
 
-      # Snaps the window's height to the screen's shape (not when maximized).
-      def fit_window_to_screen
+      # Snaps the window to the screen's shape (not when maximized). Normally the
+      # width stays and the height follows; keep: :height (the snippets sidebar
+      # opening or closing) keeps the height and grows or shrinks the width, so
+      # the screen itself doesn't change size.
+      def fit_window_to_screen(keep: :width)
         @shaped_for = grid_size
         return unless @config["lock_ratio"] && Win32.available? && !Win32.maximized?(@window)
         return unless (extras = window_extras)
 
-        width, = Win32.window_size(@window)
-        height = shaped_height(width, extras)
+        width, height = Win32.window_size(@window)
+        if keep == :height
+          width = shaped_width(height, extras)
+        else
+          height = shaped_height(width, extras)
+        end
         # Keep it on the screen: too tall means narrower, and move it up if needed.
         area_x, area_y, area_w, area_h = Win32.work_area(@window)
         height = shaped_height(width = area_w, extras) if width > area_w
@@ -1035,13 +1398,13 @@ module Tn3270
       # other programs are unaffected.
       def set_caps(on)
         set_option("caps", on)
-        UI.menu_item_set_checked(@caps_item, Ui.flag(on))
+        @program.sync_check(:caps, on)
         redraw
       end
 
       def set_crosshair(on)
         set_option("crosshair", on)
-        UI.menu_item_set_checked(@crosshair_item, Ui.flag(on))
+        @program.sync_check(:crosshair, on)
         redraw
       end
 
@@ -1132,37 +1495,95 @@ module Tn3270
       end
 
       def connections_dialog
-        @connections = ConnectionsDialog.new(@config, on_connect: ->(conn) { connect_to(conn) },
-                                                      on_save: -> { refresh_recent_menu })
+        @connections = ConnectionsDialog.new(@config, on_connect: ->(conn) { open_session(conn) },
+                                                      on_save: -> { @program.refresh_recent_menu })
         @connections.show
+      end
+
+      # ---- Session > Export / Import Settings --------------------------------------
+
+      def personal_snippets
+        library.reload_if_changed
+        library.items.select { |i| i.file == library.personal_file }
+      end
+
+      def export_settings
+        path = Ui.take_text(UI.save_file(@window))
+        return if path.empty?
+
+        path += ".yml" unless path.match?(/\.ya?ml\z/i)
+        bundle = SettingsTransfer.export(@config, personal_snippets)
+        SettingsTransfer.write(path, bundle)
+        msg_box("Export Settings", "Saved #{SettingsTransfer.summary(SettingsTransfer.read(path))} to\n#{path}\n\n" \
+                                   "Import it with Session > Import Settings on the other computer.")
+      rescue SystemCallError => e
+        msg_box("Export Settings", "Couldn't save the file:\n#{e.message}")
+      end
+
+      def import_settings
+        path = Ui.open_file(@window)
+        return unless path
+
+        bundle = SettingsTransfer.read(path)
+        question = "Import #{SettingsTransfer.summary(bundle)} from #{File.basename(path)}?\n\n" \
+                   "Sessions and snippets with the same name are replaced; your others are kept. " \
+                   "The file's options replace yours."
+        return unless !Win32.available? || Win32.confirm(@window, "Import Settings", question)
+
+        snippets = SettingsTransfer.apply(bundle, @config)
+        @config.save
+        merge_snippets(snippets)
+        @program.reload_bindings
+        @program.refresh_recent_menu
+        msg_box("Import Settings", "Imported. Some options (view and menu settings) show after you restart ruby3270.")
+      rescue ArgumentError, Psych::Exception, SystemCallError => e
+        msg_box("Import Settings", "Couldn't import #{File.basename(path.to_s)}:\n#{e.message}")
+      end
+
+      def merge_snippets(snippets)
+        SettingsTransfer.merge_snippets(library, snippets)
+        snippets_changed
       end
 
       # ---- saved sessions in the Session menu ------------------------------------
 
-      # bin/tn3270 --session NAME connects to that saved session; a name that
-      # isn't saved is tried as host:port.
-      def connect_at_start
-        if @initial_session
-          conn = @config.connections.find { |c| c["name"].to_s.casecmp?(@initial_session.strip) }
-          conn ? connect_to(conn) : @controller.connect(@initial_session)
-        elsif @initial_host
-          @controller.connect(@initial_host)
+      public
+
+      # bin/tn3270 --session NAME (or another launch handing over its
+      # session) opens that saved session; a name that isn't saved is tried
+      # as host:port. {"host" => "host:port"} opens a host.
+      def open_request(request)
+        if (name = request["session"])
+          conn = @config.connections.find { |c| c["name"].to_s.casecmp?(name.strip) }
+          open_session(conn || name)
+        elsif (host = request["host"])
+          open_session(host)
         end
       end
 
-      # Connects to a saved connection and moves it to the top of the menu.
+      private
+
+      # Opens a session in this tab if it isn't in use, otherwise in a new
+      # tab: a live session is never replaced.
+      def open_session(target)
+        new_tab unless @tab.idle?
+        saved = target.is_a?(Hash) && @config.connections.include?(target)
+        saved ? connect_to(target) : @controller.connect(target)
+      end
+
+      # Connects this tab to a saved connection and moves it to the top of the menu.
       def connect_to(conn)
         name = conn["name"].to_s
         @config["last_connection"] = name
         @config["recent"] = ([name] + Array(@config["recent"]) - [""]).uniq.first(50)
         @config.save
-        refresh_recent_menu
+        @program.refresh_recent_menu
         @controller.connect(conn)
       end
 
       def connect_recent(index)
         conn = @recent_list && @recent_list[index]
-        conn ? connect_to(conn) : connections_dialog
+        conn ? open_session(conn) : connections_dialog
       end
 
       # Saved connections, most recently used first.
@@ -1176,7 +1597,7 @@ module Tn3270
       def refresh_recent_menu
         return unless @menu_bar
 
-        @recent_list = recent_connections.first(RECENT_SLOTS)
+        @recent_list = recent_connections.first(Program::RECENT_SLOTS)
         labels = @recent_list.each_with_index.map do |c, i|
           "&#{i + 1}  #{c['name'].to_s.gsub('&', '&&')}\t#{Config.display_string(c)}"
         end
@@ -1184,20 +1605,22 @@ module Tn3270
       end
 
       def keys_dialog
-        @keys = KeysDialog.new(@config, on_change: -> { @bindings = Keymap.bindings(@config["keys"]); redraw })
+        @keys = KeysDialog.new(@config, on_change: -> { @program.reload_bindings })
         @keys.show
       end
 
       def font_dialog
-        @font = FontDialog.new(@config, on_change: lambda {
-          @reshape = true
-          redraw
-        })
+        @font = FontDialog.new(@config, on_change: -> { @program.for_all(:font_changed) })
         @font.show
       end
 
+      def font_changed
+        @reshape = true
+        redraw
+      end
+
       def keyboard_help
-        msg_box("Keyboard", Keymap.help(@bindings))
+        msg_box("Keyboard", Keymap.help(bindings))
       end
     end
   end

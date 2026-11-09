@@ -1,0 +1,19 @@
+---
+spell_language: en-US
+snippet_files:
+- examples/snippets.yml
+script_port: 3299
+last_connection: Demo LPAR
+desktop_shortcuts: false
+recent:
+- Demo LPAR
+connections:
+- name: Demo LPAR
+  host: 127.0.0.1
+  port: 3290
+  tls: false
+  lu: ''
+  rows: 32
+  cols: 80
+  verify_cert: false
+  script: ''

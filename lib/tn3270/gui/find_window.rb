@@ -62,6 +62,13 @@ module Tn3270
 
       def focus = Win32.focus(@win)
 
+      def close
+        return unless @open
+
+        closed
+        close_window(@win)
+      end
+
       # Called when the live screen changes, to keep the match count current.
       # Leaves "Match 2 of 5" alone while the count is unchanged.
       def refresh

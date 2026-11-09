@@ -43,6 +43,7 @@ module Tn3270
       # Every action a key can be bound to, with its label for menus and help.
       ACTIONS = {
         "enter" => "Enter", "clear" => "Clear", "reset" => "Reset (unlock)",
+        "escape" => "Reset if the keyboard is locked, otherwise Clear",
         "attn" => "Attn", "sysreq" => "SysReq",
         **(1..24).to_h { |n| ["pf#{n}", "PF#{n}"] },
         **(1..3).to_h { |n| ["pa#{n}", "PA#{n}"] },
@@ -58,6 +59,9 @@ module Tn3270
         "caps" => "Caps Lock (this app only) on/off",
         "snippet_picker" => "Snippets: quick pick",
         "snippet_bar" => "Snippets sidebar on/off",
+        "spell_next" => "Next misspelled word (opens its suggestions)",
+        "new_tab" => "New tab", "close_tab" => "Close tab", "new_window" => "New window",
+        "next_tab" => "Next tab", "prev_tab" => "Previous tab",
         **(1..9).to_h { |n| ["snippet#{n}", "Snippet #{n} (in the sidebar list)"] }
       }.freeze
 
@@ -100,14 +104,16 @@ module Tn3270
         **(1..12).to_h { |n| ["Shift+F#{n}", "pf#{n + 12}"] },
         **(1..3).to_h { |n| ["Ctrl+F#{n}", "pa#{n}"] },
         "Enter" => "enter", "Keypad Enter" => "enter", "Shift+Enter" => "newline", "Right Ctrl" => "newline",
-        "Escape" => "clear", "Ctrl+R" => "reset", "Ctrl+A" => "attn",
+        "Escape" => "escape", "Ctrl+R" => "reset", "Ctrl+A" => "attn",
         "Tab" => "tab", "Shift+Tab" => "backtab", "Home" => "home", "End" => "erase_eof",
         "Insert" => "insert", "Delete" => "delete", "Backspace" => "backspace",
         "Up" => "up", "Down" => "down", "Left" => "left", "Right" => "right",
         "Ctrl+C" => "copy", "Ctrl+V" => "paste",
         "Ctrl+H" => "history", "Ctrl+PageUp" => "history",
         "Ctrl+F" => "find", "Ctrl+Shift+X" => "crosshair",
-        "Ctrl+Space" => "snippet_picker", "Ctrl+Shift+S" => "snippet_bar",
+        "Ctrl+Space" => "snippet_picker", "Ctrl+Shift+S" => "snippet_bar", "Ctrl+;" => "spell_next",
+        "Ctrl+T" => "new_tab", "Ctrl+W" => "close_tab", "Ctrl+N" => "new_window",
+        "Ctrl+Tab" => "next_tab", "Ctrl+Shift+Tab" => "prev_tab",
         **(1..9).to_h { |n| ["Ctrl+#{n}", "snippet#{n}"] }
       }.freeze
 
@@ -180,6 +186,8 @@ module Tn3270
         when "caps" then [:caps]
         when "snippet_picker" then [:snippet_picker]
         when "snippet_bar" then [:snippet_bar]
+        when "spell_next" then [:spell_next]
+        when "new_tab", "close_tab", "new_window", "next_tab", "prev_tab" then [action.to_sym]
         when /\Asnippet(\d)\z/ then [:snippet, Regexp.last_match(1).to_i]
         else [:key, action.to_sym]
         end
@@ -192,7 +200,8 @@ module Tn3270
           next if keys.empty?
 
           format("%-30s %s", keys.join(", "), label)
-        end.join("\n") + "\n#{format('%-30s %s', 'Click / drag', 'Move cursor / select text')}"
+        end.join("\n") + "\n#{format('%-30s %s', 'Click / drag', 'Move cursor / select text')}" \
+                         "\n#{format('%-30s %s', 'Right-click', 'Copy the selection; on a red-underlined word, spelling suggestions')}"
       end
     end
   end

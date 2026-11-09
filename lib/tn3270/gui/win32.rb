@@ -47,8 +47,57 @@ module Tn3270
 
       def wide(str) = Fiddle::Pointer["#{str}\0".encode("UTF-16LE")]
 
+      # An OK / Cancel question with a "?" icon. True for OK.
+      def confirm(window, title, text)
+        fn("MessageBoxW", [P, P, P, I]).call(hwnd(window), wide(text), wide(title), 0x1 | 0x20) == 1 # MB_OKCANCEL | MB_ICONQUESTION
+      end
+
       # HWND of a libui control (a window or any widget pointer).
       def hwnd(control) = ::LibUI.control_handle(control)
+
+      # A point in a control's client area -> screen coordinates.
+      def client_to_screen(control, x, y)
+        ptr = Fiddle::Pointer[[x.round, y.round].pack("l2")]
+        fn("ClientToScreen", [P, P]).call(hwnd(control), ptr)
+        ptr[0, 8].unpack("l2")
+      end
+
+      CHOICE_SEPARATOR = 0x800 # MF_SEPARATOR
+      CHOICE_GRAYED = 0x1      # MF_GRAYED
+      TPM_NONOTIFY = 0x80
+      TPM_RETURNCMD = 0x100
+
+      # A popup menu that returns the chosen item's index (nil: none chosen).
+      # items: labels; nil for a separator; [label, false] for a greyed-out
+      # item. Opens at screen point `at`, or at the mouse pointer. Blocks
+      # until the menu closes.
+      def choose(control, items, at: nil)
+        return nil unless available?
+
+        menu = fn("CreatePopupMenu", [], P).call
+        append = fn("AppendMenuW", [P, I, U, P])
+        items.each_with_index do |item, i|
+          if item.nil?
+            append.call(menu, CHOICE_SEPARATOR, 0, nil)
+          else
+            label, enabled = Array(item)
+            append.call(menu, enabled == false ? CHOICE_GRAYED : 0, i + 1, wide(label.gsub("&", "&&")))
+          end
+        end
+        unless at
+          pt = Fiddle::Pointer.malloc(8)
+          fn("GetCursorPos", [P]).call(pt)
+          at = pt[0, 8].unpack("l2")
+        end
+        win = hwnd(control)
+        fn("ReleaseCapture", []).call
+        fn("SetForegroundWindow", [P]).call(win)
+        id = fn("TrackPopupMenu", [P, I, I, I, I, P, P]).call(menu, TPM_RETURNCMD | TPM_NONOTIFY, at[0], at[1], 0, win, nil)
+        fn("PostMessageW", [P, I, U, P]).call(win, WM_NULL, 0, nil)
+        id.positive? ? id - 1 : nil
+      ensure
+        fn("DestroyMenu", [P]).call(menu) if menu
+      end
 
       # Sets the title bar / taskbar icon of a window.
       def set_icon(window)
@@ -181,6 +230,56 @@ module Tn3270
       SWP_NOMOVE_Z_ACTIVATE = 0x2 | 0x4 | 0x10 # NOMOVE | NOZORDER | NOACTIVATE
       def resize(window, width, height)
         fn("SetWindowPos", [P, P, I, I, I, I, I]).call(hwnd(window), nil, 0, 0, width.round, height.round, SWP_NOMOVE_Z_ACTIVATE)
+      end
+
+      # Moves a window, keeping its size.
+      SWP_NOSIZE_Z_ACTIVATE = 0x1 | 0x4 | 0x10 # NOSIZE | NOZORDER | NOACTIVATE
+      def move(window, left, top)
+        fn("SetWindowPos", [P, P, I, I, I, I, I]).call(hwnd(window), nil, left.round, top.round, 0, 0, SWP_NOSIZE_Z_ACTIVATE)
+      end
+
+      # A window's outer rectangle: [left, top, right, bottom].
+      def window_rect(control)
+        rect = Fiddle::Pointer.malloc(16, Fiddle::RUBY_FREE)
+        fn("GetWindowRect", [P, P]).call(hwnd(control), rect)
+        rect[0, 16].unpack("l4")
+      end
+
+      # The mouse pointer in screen pixels: [x, y].
+      def cursor_pos
+        pt = Fiddle::Pointer.malloc(8, Fiddle::RUBY_FREE)
+        fn("GetCursorPos", [P]).call(pt)
+        pt[0, 8].unpack("l2")
+      end
+
+      # Whether the primary mouse button is held down right now (even when the
+      # pointer is outside every window of the app).
+      SM_SWAPBUTTON = 23
+      def primary_button_down?
+        vk = fn("GetSystemMetrics", [I]).call(SM_SWAPBUTTON).zero? ? 0x01 : 0x02
+        fn("GetAsyncKeyState", [I], Fiddle::TYPE_SHORT).call(vk).negative?
+      end
+
+      # The window that has the keyboard (a raw HWND as an integer).
+      def foreground = fn("GetForegroundWindow", [], P).call.to_i
+
+      # Shows a window (restoring it if minimized) and brings it to the front.
+      def bring_to_front(window)
+        h = hwnd(window)
+        fn("ShowWindow", [P, I]).call(h, 9) if fn("IsIconic", [P]).call(h) != 0 # SW_RESTORE
+        fn("SetForegroundWindow", [P]).call(h)
+      rescue StandardError
+        nil
+      end
+
+      # Lets the running copy of the app take the foreground when this one
+      # hands it a session (Windows only allows that if we say so).
+      def allow_foreground
+        return unless available?
+
+        fn("AllowSetForegroundWindow", [I]).call(-1) # ASFW_ANY
+      rescue StandardError
+        nil
       end
 
       # Lets the app reshape a window while the user drags its edges. The

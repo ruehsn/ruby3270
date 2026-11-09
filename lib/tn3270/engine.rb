@@ -123,13 +123,18 @@ module Tn3270
       engine
     end
 
-    # Whether something is already listening on 127.0.0.1:port.
+    # Whether something already has 127.0.0.1:port (or the port can't be
+    # used). Tried by binding to it, which answers at once; connecting to a
+    # free port takes Windows about 2 seconds to refuse.
     def self.port_in_use?(port)
       require "socket"
-      Socket.tcp("127.0.0.1", port, connect_timeout: 0.5, &:close)
-      true
-    rescue SystemCallError, SocketError, IOError
+      probe = Socket.new(:INET, :STREAM) # no SO_REUSEADDR: any owner makes bind fail
+      probe.bind(Addrinfo.tcp("127.0.0.1", port))
       false
+    rescue SystemCallError, SocketError
+      true
+    ensure
+      probe&.close
     end
 
     # The first port from `start` that nothing is listening on (looking at
@@ -229,6 +234,8 @@ module Tn3270
       pid = Process.spawn(*args, "-scriptport", "127.0.0.1:#{port}", in: File::NULL, out: File::NULL, err: File::NULL)
       @wait = Process.detach(pid)
       deadline = Time.now + 10
+      # Wait for the engine to take the port before connecting (see port_in_use?).
+      sleep 0.02 while @wait.alive? && Time.now < deadline && !self.class.port_in_use?(port)
       begin
         open_socket("127.0.0.1", port, attached: false)
       rescue Error
