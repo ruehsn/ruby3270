@@ -44,6 +44,10 @@ The 3270 protocol itself is handled by **s3270** (`ws3270.exe` on Windows) from 
   at the field's end, and the paste stops at the bottom of the screen (the status bar says so). Where there's
   no input field below (a form), the line goes in the next input field down. Pasting overwrites what's there:
   in ISPF, make room first with a line command such as `I5`
+- **Undo** (Ctrl+Z or Edit > Undo): takes back the last paste, snippet, spelling fix or run of typing
+  (up to 20 steps), putting back the fields' text and the cursor. It works until you press Enter, a PF
+  key or anything else the host answers, because the host's new screen replaces what was there.
+  Password fields are never touched
 - F1-F12 = PF1-12, Shift+F1-F12 = PF13-24, Ctrl+F1-F3 = PA1-3, Right Ctrl = New line
   (full list under Help > Keyboard)
 - **Keyboard mapping** (Keys > Keyboard Mapping...): double-click an action and press any key combination,

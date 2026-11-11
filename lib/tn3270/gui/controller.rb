@@ -38,6 +38,13 @@ module Tn3270
       # unlocked keyboard; the others (connect, reset...) run right away.
       Job = Struct.new(:block, :input)
 
+      # What Ctrl+Z puts back: the input fields' text (or, on an unformatted
+      # screen, each row) and the cursor, from before a paste or some typing.
+      UndoPoint = Struct.new(:fields, :rows, :cursor, :records, :what)
+      UNDO_LIMIT = 20
+      # Keys that change a field's text: they join the typing that undo takes back.
+      EDIT_KEYS = %i[backspace delete erase_eof erase_input].freeze
+
       HistoryEntry = Struct.new(:lines, :status, :time) do
         def screen = Screen.from_buffer(lines, status)
       end
@@ -61,6 +68,8 @@ module Tn3270
         @connecting_since = nil
         @last_target = nil
         @typeahead = []
+        @undo = []
+        @typing = false # typing since the last undo point (one Ctrl+Z takes it all back)
         @aid_sent_at = nil
         @response_time = nil
         @rows = config["rows"]
@@ -89,6 +98,7 @@ module Tn3270
         notify
         enqueue do
           stop_startup_script
+          forget_undo
           @session.disconnect if connected?
           @script_wants_port = !StartupScript.path_for(conn).nil? # the script attaches through it
           rows = conn["rows"].to_i
@@ -129,14 +139,32 @@ module Tn3270
         enqueue do
           @script_conn = nil
           stop_startup_script
+          forget_undo
           @typeahead.clear
           @aid_sent_at = nil
           @session.disconnect
         end
       end
 
-      def type(text) = enqueue(input: true) { type_checked(text) }
-      def move_to(row, col) = enqueue(input: true) { @session.move_to(row, col) }
+      def type(text) = enqueue(input: true) { typing { type_checked(text) } }
+
+      def move_to(row, col)
+        enqueue(input: true) do
+          @typing = false
+          @session.move_to(row, col)
+        end
+      end
+
+      # Ctrl+Z: takes back the last paste, snippet, spelling fix or run of
+      # typing, until the host sends a new screen (Enter, PF... clear the list).
+      def undo
+        enqueue(input: true) do
+          undo_now
+          notify
+        end
+      end
+
+      def can_undo? = @undo.any?
 
       # Shows a message in the status bar (until the next one).
       def flash(text)
@@ -149,6 +177,7 @@ module Tn3270
       # changes and the status bar says so. The cursor ends after the new word.
       def replace_word(row, col, old, new)
         enqueue(input: true) do
+          undo_point("spelling fix")
           screen = @session.screen
           field = screen.field_at(row, col)
           offset = ((row * screen.cols) + col) - ((field.row * screen.cols) + field.col) if field
@@ -181,7 +210,12 @@ module Tn3270
           key = was_locked ? :reset : :clear if key == :escape
           @insert_mode = !@insert_mode if key == :insert
           reset_keyboard if key == :reset
-          send_key(key)
+          if EDIT_KEYS.include?(key)
+            typing { send_key(key) }
+          else
+            @typing = false
+            send_key(key)
+          end
           cursor_to_input_field if key == :reset && was_locked
         end
       end
@@ -221,6 +255,7 @@ module Tn3270
         if key.to_s.match?(AID)
           refresh # catch keystrokes typed since the last poll
           remember
+          forget_undo # the host answers with a new screen
           @records_before = records_received
           @aid_sent_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
         end
@@ -262,7 +297,7 @@ module Tn3270
       # column, one row down each (see Paste).
       def paste(text)
         enqueue(input: true) do
-          screen = @session.screen
+          screen = undo_point("paste")
           steps, note = Paste.plan(screen, screen.cursor_row, screen.cursor_col, text.delete("\r").split("\n"))
           steps.each { |op, *args| op == :move ? @session.move_to(*args) : @session.type(*args) }
           @message = note if note
@@ -274,6 +309,7 @@ module Tn3270
       # the window redraws after each step. Errors show in the status bar.
       def run_snippet(text, answers: {}, vars: {}, name: nil)
         enqueue(input: true) do
+          undo_point(name ? "snippet \"#{name}\"" : "snippet")
           Snippet.run(@session, text, answers: answers, vars: vars,
                                       wait_timeout: @config["snippet_wait_seconds"].to_f,
                                       press: ->(key) { snippet_key(key) }, after: -> { refresh })
@@ -363,6 +399,82 @@ module Tn3270
         # Replace the array rather than mutate it; the UI thread reads it.
         entry = HistoryEntry.new(lines, status, Time.now)
         @history = (@history + [entry]).last(@config["history_size"].to_i.clamp(1, 5000))
+      end
+
+      # ---- undo (on the worker thread) ----------------------------------------------
+
+      # Saves what the screen's input looks like now, so Ctrl+Z can put it
+      # back. Returns the screen it read.
+      def undo_point(what)
+        @typing = false
+        screen = @session.screen
+        fields = screen.input_fields.map { |f| [f.row, f.col, f.length, f.value.to_s] } unless screen.fields.empty?
+        rows = (0...screen.rows).map { |r| screen.row_text(r) } if screen.fields.empty?
+        point = UndoPoint.new(fields, rows, [screen.cursor_row, screen.cursor_col], records_received, what)
+        @undo = (@undo + [point]).last(UNDO_LIMIT)
+        screen
+      end
+
+      # Typed characters and editing keys up to the next other action form
+      # one undo step.
+      def typing
+        undo_point("typing") unless @typing
+        @typing = true
+        yield
+      end
+
+      def forget_undo
+        @undo = []
+        @typing = false
+      end
+
+      def undo_now
+        @typing = false
+        point = @undo.pop
+        return @message = "Nothing to undo" unless point
+        if point.records != records_received
+          forget_undo
+          return @message = "Can't undo: the host has changed the screen since"
+        end
+
+        screen = @session.screen
+        return unless (restored = point.fields ? restore_fields(point, screen) : restore_rows(point, screen))
+
+        @session.move_to(*point.cursor)
+        @message = restored.zero? ? "Undid #{point.what} (nothing had changed)" : "Undid #{point.what}"
+      end
+
+      # Puts back each input field whose text differs; returns how many.
+      def restore_fields(point, screen)
+        now = screen.input_fields.to_h { |f| [[f.row, f.col, f.length], f.value.to_s] }
+        unless point.fields.all? { |r, c, len, _| now.key?([r, c, len]) }
+          forget_undo
+          @message = "Can't undo: the screen's fields have changed"
+          return nil
+        end
+
+        changed = point.fields.reject { |r, c, len, value| now[[r, c, len]] == value }
+        changed.each do |r, c, _len, value|
+          @session.move_to(r, c)
+          @session.press(:erase_eof, wait: false)
+          @session.type(value) unless value.empty?
+        end
+        changed.size
+      end
+
+      # An unformatted screen has no fields: rows that differ are typed over
+      # (in overtype mode, so nothing shifts).
+      def restore_rows(point, screen)
+        changed = point.rows.each_index.reject { |r| screen.row_text(r) == point.rows[r] }
+        return 0 if changed.empty?
+
+        @session.press(:insert, wait: false) if @insert_mode
+        changed.each do |r|
+          @session.move_to(r, 0)
+          @session.type(point.rows[r])
+        end
+        @session.press(:insert, wait: false) if @insert_mode
+        changed.size
       end
 
       def enqueue(input: false, &block)

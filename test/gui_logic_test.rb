@@ -39,6 +39,7 @@ class KeymapTest < Minitest::Test
     assert_equal [:key, :erase_eof], K.translate(ev(ext_key: :end))
     assert_equal [:key, :reset], K.translate(ev(key: "r", modifiers: [:ctrl]))
     assert_equal [:paste], K.translate(ev(key: "v", modifiers: [:ctrl]))
+    assert_equal [:undo], K.translate(ev(key: "z", modifiers: [:ctrl]))
   end
 
   def test_remapped_keys
@@ -246,6 +247,38 @@ three")
     wait_until { @c.message.to_s.include?("no room below") }
     assert_equal "Pasted 1 of 3 lines (no room below)", @c.message
     refute_includes edit_row(3), "two" # never wrapped round to the command line
+  end
+
+  # ---- Ctrl+Z ---------------------------------------------------------------
+
+  def test_undo_takes_back_a_paste_then_the_typing_before_it
+    open_editor
+    before = (5..7).map { |r| edit_row(r) }
+    @c.move_to(5, 7)
+    @c.type("KEEP")
+    @c.move_to(6, 7)
+    @c.paste("AAAA
+BBBB")
+    wait_until { edit_row(7)[7, 4] == "BBBB" && edit_row(5)[7, 4] == "KEEP" }
+    @c.undo
+    wait_until { @c.message == "Undid paste" && edit_row(7) == before[2] }
+    assert_equal before[1], edit_row(6)
+    assert_equal "KEEP", edit_row(5)[7, 4]
+    @c.undo
+    wait_until { @c.message == "Undid typing" && edit_row(5) == before[0] }
+    @c.undo
+    wait_until { @c.message == "Nothing to undo" }
+  end
+
+  def test_enter_clears_what_undo_can_take_back
+    open_editor
+    @c.move_to(5, 7)
+    @c.paste("GONE")
+    @c.press(:enter)
+    wait_until { edit_row(5)[7, 4] == "GONE" && !@c.waiting_for_host? }
+    @c.undo
+    wait_until { @c.message == "Nothing to undo" }
+    assert_equal "GONE", edit_row(5)[7, 4]
   end
 
   def test_paste_into_a_form_uses_the_next_field_below

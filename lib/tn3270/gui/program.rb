@@ -360,7 +360,7 @@ module Tn3270
       # ---- menus ---------------------------------------------------------------------
 
       # Key binding action shown as a menu item's shortcut, by menu command.
-      SHORTCUTS = { new_tab: "new_tab", close_tab: "close_tab", copy: "copy", paste: "paste", show_find: "find",
+      SHORTCUTS = { new_tab: "new_tab", close_tab: "close_tab", copy: "copy", paste: "paste", undo: "undo", show_find: "find",
                     open_picker: "snippet_picker", show_history: "history", caps: "caps",
                     crosshair: "crosshair", snippet_bar: "snippet_bar" }.freeze
 
@@ -437,6 +437,8 @@ module Tn3270
         end
 
         m = UI.new_menu("Edit")
+        item(m, "Undo", :undo)
+        UI.menu_append_separator(m)
         item(m, "Copy (selection or screen)", :copy)
         item(m, "Copy Whole Screen", :copy_screen)
         item(m, "Paste", :paste)

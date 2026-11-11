@@ -1191,6 +1191,7 @@ module Tn3270
         when :snippet then run_snippet_number(action[1])
         when :copy then copy
         when :paste then paste
+        when :undo then undo
         when :key
           clear_selection
           @controller.press(action[1])
@@ -1369,6 +1370,11 @@ module Tn3270
       end
 
       def paste = @controller.paste(Clipboard.paste)
+
+      def undo
+        clear_selection
+        @controller.undo
+      end
 
       # ---- view options --------------------------------------------------------
 

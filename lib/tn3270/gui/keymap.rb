@@ -10,6 +10,7 @@ module Tn3270
     #   [:key, :pf13]                  an AID or editing key for Session#press
     #   [:type, "a"]                   a character to type
     #   [:copy] / [:paste]             clipboard
+    #   [:undo]                        take back the last paste or typing
     #   [:history]                     open the screen history window
     #   nil                            not ours; let it pass through
     module Keymap
@@ -53,6 +54,7 @@ module Tn3270
         "insert" => "Toggle insert mode",
         "up" => "Cursor up", "down" => "Cursor down", "left" => "Cursor left", "right" => "Cursor right",
         "copy" => "Copy", "paste" => "Paste",
+        "undo" => "Undo (the last paste, snippet or typing)",
         "history" => "Screen history window",
         "find" => "Find on screen / in history",
         "crosshair" => "Crosshair on/off",
@@ -108,7 +110,7 @@ module Tn3270
         "Tab" => "tab", "Shift+Tab" => "backtab", "Home" => "home", "End" => "erase_eof",
         "Insert" => "insert", "Delete" => "delete", "Backspace" => "backspace",
         "Up" => "up", "Down" => "down", "Left" => "left", "Right" => "right",
-        "Ctrl+C" => "copy", "Ctrl+V" => "paste",
+        "Ctrl+C" => "copy", "Ctrl+V" => "paste", "Ctrl+Z" => "undo",
         "Ctrl+H" => "history", "Ctrl+PageUp" => "history",
         "Ctrl+F" => "find", "Ctrl+Shift+X" => "crosshair",
         "Ctrl+Space" => "snippet_picker", "Ctrl+Shift+S" => "snippet_bar", "Ctrl+;" => "spell_next",
@@ -180,6 +182,7 @@ module Tn3270
         case action
         when "copy" then [:copy]
         when "paste" then [:paste]
+        when "undo" then [:undo]
         when "history" then [:history]
         when "find" then [:find]
         when "crosshair" then [:crosshair]
