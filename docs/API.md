@@ -291,6 +291,9 @@ All errors inherit from `Tn3270::Error`:
 
 - `Tn3270::TimeoutError`: a wait ran out of time.
 - `Tn3270::ActionError`: the engine refused an action (for example typing into a protected field).
+  `e.detail` is the engine's reason and `e.action` the action it refused. The message is
+  `"action: detail"`, except that typed text is left out (`String(...): Keyboard locked`), so a
+  password never ends up in a status bar or a log; `e.action` still has it.
 - `Tn3270::Error`: the engine couldn't start or stopped, or there was nothing to attach to.
 
 ## Anything else

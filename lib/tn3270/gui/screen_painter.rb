@@ -32,6 +32,13 @@ module Tn3270
         fill(alpha, rgb) { |p| UI.draw_path_add_rectangle(p, x, y, w, h) }
       end
 
+      # Many rectangles ([x, y, w, h] each) in one color, drawn in one go.
+      def fill_rects(rects, rgb, alpha = 1.0)
+        return if rects.empty?
+
+        fill(alpha, rgb) { |p| rects.each { |x, y, w, h| UI.draw_path_add_rectangle(p, x, y, w, h) } }
+      end
+
       def stroke_rect(x, y, w, h, rgb, thickness = 1.0, alpha = 1.0)
         stroke(rgb, alpha, thickness) { |p| UI.draw_path_add_rectangle(p, x, y, w, h) }
       end
@@ -141,25 +148,55 @@ module Tn3270
         [size, cw, ch, left, y + (top ? 0 : spare / 2.0)]
       end
 
+      # What paint_cells draws for a screen, in rows and columns. Spans are
+      # [row, col, length], grouped by color ({ rgb => [span, ...] }):
+      #   blocks      reverse-video backgrounds
+      #   underlines  lines under underscored text
+      #   input_lines lines under input fields (drawn if that setting is on)
+      #   texts       [[row, col, string, rgb, bold], ...]
+      PaintPlan = Struct.new(:blocks, :underlines, :input_lines, :texts)
+
       # Draws every character of a screen. Each row is drawn as runs of
       # same-styled text, each run placed at its own column so it can't drift.
+      # Backgrounds and underlines of one color are drawn together.
       def paint_cells(pt, scr, size, cw, ch, ox, oy, font, underline: true)
-        scr.rows.times do |r|
-          y = oy + (r * ch)
-          style_runs(scr, r).each do |col, str, cell|
-            x = ox + (col * cw)
-            fg = PALETTE[cell.color] || PALETTE[:green]
-            if cell.highlight == 0xF2 # reverse video
-              pt.fill_rect(x, y, str.size * cw, ch, fg)
-              fg = BACKGROUND
-            end
-            if (underline && cell.input) || cell.highlight == 0xF4
-              pt.fill_rect(x, y + ch - [ch * 0.08, 1].max, str.size * cw, [ch * 0.06, 1].max, fg, 0.55)
-            end
-            next if str.strip.empty?
-
-            pt.text(x, y, (str.size + 4) * cw, str, fg, font, size, bold: cell.bright)
+        plan = paint_plan(scr)
+        plan.blocks.each do |rgb, spans|
+          pt.fill_rects(spans.map { |r, c, n| [ox + (c * cw), oy + (r * ch), n * cw, ch] }, rgb)
+        end
+        line_y = oy + ch - [ch * 0.08, 1].max
+        line_h = [ch * 0.06, 1].max
+        (underline ? [plan.underlines, plan.input_lines] : [plan.underlines]).each do |lines|
+          lines.each do |rgb, spans|
+            pt.fill_rects(spans.map { |r, c, n| [ox + (c * cw), line_y + (r * ch), n * cw, line_h] }, rgb, 0.55)
           end
+        end
+        plan.texts.each do |r, c, str, rgb, bold|
+          pt.text(ox + (c * cw), oy + (r * ch), (str.size + 4) * cw, str, rgb, font, size, bold: bold)
+        end
+      end
+
+      # The PaintPlan for a screen. It's kept with the screen, so it is worked
+      # out once however many frames show that screen (a cursor move doesn't
+      # change it).
+      def paint_plan(scr)
+        scr.memo(:paint_plan) do
+          plan = PaintPlan.new({}, {}, {}, [])
+          scr.rows.times do |r|
+            style_runs(scr, r).each do |col, str, cell|
+              fg = PALETTE[cell.color] || PALETTE[:green]
+              span = [r, col, str.size]
+              if cell.highlight == 0xF2 # reverse video
+                (plan.blocks[fg] ||= []) << span
+                fg = BACKGROUND
+              end
+              if cell.highlight == 0xF4 then (plan.underlines[fg] ||= []) << span
+              elsif cell.input then (plan.input_lines[fg] ||= []) << span
+              end
+              plan.texts << [r, col, str, fg, cell.bright] unless str.strip.empty?
+            end
+          end
+          plan
         end
       end
 
@@ -175,7 +212,9 @@ module Tn3270
       end
 
       # [[row, first_col, last_col, color], ...] for each word on the screen.
-      def minimap_runs(scr)
+      def minimap_runs(scr) = scr.memo(:minimap_runs) { find_minimap_runs(scr) }
+
+      def find_minimap_runs(scr)
         runs = []
         scr.rows.times do |r|
           start = nil

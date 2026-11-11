@@ -55,6 +55,26 @@ class SessionTest < Minitest::Test
     @s.wait_for_text("Host saw:   hello 3270")
   end
 
+  # Typing where you can't: the error says why, but not what was typed
+  # (it may be a password, and messages end up in status bars and logs).
+  def test_action_error_keeps_typed_text_out_of_its_message
+    @s.wait_for_text("USER ID")
+    @s.move_to(1, 1)
+    err = assert_raises(Tn3270::ActionError) { @s.type("hunter2): tail") }
+    assert_match(/\AString\(\.\.\.\): .*Operator error/i, err.message)
+    refute_includes err.message, "hunter2"
+    refute_includes err.message, "tail"
+    assert_includes err.action, "hunter2"
+    assert_match(/Operator error/i, err.detail)
+    @s.press(:reset)
+  end
+
+  def test_action_error_names_other_actions_in_full
+    err = assert_raises(Tn3270::ActionError) { @s.raw("Bogus(1)") }
+    assert_equal ["Bogus(1)", "Bogus(1): #{err.detail}"], [err.action, err.message]
+    assert_equal ["plain", "plain", nil], Tn3270::ActionError.new("plain").then { |e| [e.message, e.detail, e.action] }
+  end
+
   def test_pf3_goes_back
     login
     @s.pf(3)

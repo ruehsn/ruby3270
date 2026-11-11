@@ -314,7 +314,7 @@ module Tn3270
                                       wait_timeout: @config["snippet_wait_seconds"].to_f,
                                       press: ->(key) { snippet_key(key) }, after: -> { refresh })
         rescue Error => e
-          raise Error, "Snippet #{name ? "\"#{name}\" " : ''}stopped: #{e.message.sub(/\A\w+\(.*?\): /, '')}"
+          raise Error, "Snippet #{name ? "\"#{name}\" " : ''}stopped: #{reason(e)}"
         end
       end
 
@@ -710,11 +710,15 @@ module Tn3270
           @message = "Keyboard locked: you can't type there. Reset unlocks it."
           return notify
         end
-        @message = @gave_up || explain(e.message.sub(/\A\w+\(.*?\): /, ""))
+        @message = @gave_up || explain(reason(e))
         @gave_up = nil
         revive_engine
         notify
       end
+
+      # Why something failed, for the status bar: the engine's reason without
+      # the action it was for (which can hold typed text).
+      def reason(error) = error.is_a?(ActionError) ? error.detail.to_s : error.message
 
       TLS_TIP = "If the host doesn't use TLS, untick Use TLS in Session > Connections."
 
@@ -771,8 +775,11 @@ module Tn3270
 
         @signature = sig
         note_heard(status)
+        # A cursor move or a status flag leaves the characters as they were:
+        # the last screen is reused under the new status, with no parsing.
+        same_text = @snapshot && @raw && @raw[0] == lines
+        @snapshot = (same_text && @snapshot.with_status(status)) || Screen.from_buffer(lines, status)
         @raw = [lines, status]
-        @snapshot = Screen.from_buffer(lines, status)
         @connecting_since = nil if @snapshot.status&.connected?
         notify
       rescue Error => e

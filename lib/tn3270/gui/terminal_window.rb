@@ -262,14 +262,14 @@ module Tn3270
 
       def tab_edit_key(event)
         edit = @tab_edit
-        case text_box_key(event)
+        step = text_box_key(event)
+        case step
         when :escape then @tab_edit = nil
         when :enter then finish_tab_edit
         when :backspace
           edit[:all] ? edit[:text] = +"" : edit[:text].chop!
           edit[:all] = false
         when Array
-          step = text_box_key(event)
           edit[:all] ? edit[:text] = +step[1] : edit[:text] << step[1]
           edit[:all] = false
         end

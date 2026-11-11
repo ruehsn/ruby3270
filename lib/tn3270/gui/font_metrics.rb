@@ -14,6 +14,7 @@ module Tn3270
       SAMPLE_CHARS = 100
       SAMPLE_LINES = 10
       SAMPLE_SIZE = 20.0
+      MAX_WIDTHS = 2000 # text_width answers kept (titles and tooltips keep changing)
 
       @cache = {}
 
@@ -38,7 +39,9 @@ module Tn3270
       # Width in pixels of `text` at a font size (cached).
       def text_width(family, size, text, bold: false)
         @widths ||= {}
-        @widths[[family, size, text, bold]] ||= begin
+        key = [family, size, text, bold]
+        @widths.clear if @widths.size >= MAX_WIDTHS && !@widths.key?(key)
+        @widths[key] ||= begin
           extents(family, text, size: size, bold: bold)[0]
         rescue StandardError
           text.size * size * 0.55
@@ -48,20 +51,20 @@ module Tn3270
       def extents(family, text, size: SAMPLE_SIZE, bold: false)
         str = ::LibUI.new_attributed_string(text)
         family_ptr = Fiddle::Pointer["#{family}\0"]
-        font = ::LibUI::FFI::FontDescriptor.malloc
+        font = ::LibUI::FFI::FontDescriptor.malloc(Fiddle::RUBY_FREE)
         font.Family = family_ptr
         font.Size = size
         font.Weight = bold ? ::LibUI::TextWeightBold : ::LibUI::TextWeightNormal
         font.Italic = ::LibUI::TextItalicNormal
         font.Stretch = ::LibUI::TextStretchNormal
-        params = ::LibUI::FFI::DrawTextLayoutParams.malloc
+        params = ::LibUI::FFI::DrawTextLayoutParams.malloc(Fiddle::RUBY_FREE)
         params.String = str
         params.DefaultFont = font
         params.Width = -1 # no wrapping
         params.Align = ::LibUI::DrawTextAlignLeft
         layout = ::LibUI.draw_new_text_layout(params)
-        w = Fiddle::Pointer.malloc(Fiddle::SIZEOF_DOUBLE)
-        h = Fiddle::Pointer.malloc(Fiddle::SIZEOF_DOUBLE)
+        w = Fiddle::Pointer.malloc(Fiddle::SIZEOF_DOUBLE, Fiddle::RUBY_FREE)
+        h = Fiddle::Pointer.malloc(Fiddle::SIZEOF_DOUBLE, Fiddle::RUBY_FREE)
         ::LibUI.draw_text_layout_extents(layout, w, h)
         [w[0, Fiddle::SIZEOF_DOUBLE].unpack1("d"), h[0, Fiddle::SIZEOF_DOUBLE].unpack1("d")]
       ensure

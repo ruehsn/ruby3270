@@ -81,6 +81,7 @@ module Tn3270
 
       def load_all
         @errors = []
+        @unreadable = []
         @items = files.flat_map { |f| read(f) } + script_files.map { |f| script_item(f) }
       end
 
@@ -112,8 +113,14 @@ module Tn3270
         found.sort_by.with_index { |item, i| [item.name.downcase.start_with?(q) ? 0 : 1, i] }
       end
 
+      # True for a snippet file that is there but couldn't be read (see
+      # `errors`). Nothing is saved to one: writing it would keep only the
+      # snippet being saved and lose the rest of the file.
+      def unreadable?(file) = (@unreadable || []).include?(file)
+
       def writable?(file)
         return false if ScriptInfo.script?(file) # a script, never written as a snippet file
+        return false if unreadable?(file)
         return File.writable?(file) if File.exist?(file)
 
         dir = File.dirname(file)
@@ -174,6 +181,7 @@ module Tn3270
         end
       rescue StandardError => e
         @errors << "#{File.basename(file)}: #{e.message.lines.first.strip}"
+        @unreadable << file
         []
       end
 

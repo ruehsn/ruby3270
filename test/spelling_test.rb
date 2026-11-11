@@ -44,6 +44,17 @@ class SpellingTest < Minitest::Test
     assert_equal [[2, 10], [2, 23]], words.map { |w| [w.row, w.col] }
   end
 
+  def test_a_new_shortest_field_length_checks_the_same_screen_again
+    scr = screen(field("teh", length: 8))
+    assert_empty @sp.misspelled(scr)
+    @sp.min_field = 5
+    assert_equal ["teh"], @sp.misspelled(scr).map(&:text)
+    asked = @checker.asked.size
+    @sp.min_field = 5 # unchanged: the remembered answer still stands
+    assert_same @sp.misspelled(scr), @sp.misspelled(scr)
+    assert_equal asked, @checker.asked.size
+  end
+
   def test_skips_short_protected_and_hidden_fields
     assert_empty flagged(field("teh", length: 8))
     assert_empty flagged(field("teh plese", protected: true))

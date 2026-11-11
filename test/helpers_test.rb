@@ -99,21 +99,21 @@ class AttachTest < Minitest::Test
     assert @owner.connected?
   end
 
-# Somebody else (another ruby3270 window) already listens on the port: an
-# engine must not connect to it and think it is its own.
-def test_engine_never_talks_to_someone_elses_port
-  require "socket"
-  server = TCPServer.new("127.0.0.1", 0)
-  port = server.addr[1]
-  accepted = 0
-  Thread.new { loop { server.accept.close; accepted += 1 } }
-  err = assert_raises(Tn3270::Error) { Tn3270::Engine.new(rows: 24, cols: 80, script_port: port) }
-  assert_includes err.message, "already in use"
-  assert_operator Tn3270::Engine.free_port(port), :>, port
-  assert_operator accepted, :<=, 2 # only our own "is it free?" probes
-ensure
-  server&.close
-end
+  # Somebody else (another ruby3270 window) already listens on the port: an
+  # engine must not connect to it and think it is its own.
+  def test_engine_never_talks_to_someone_elses_port
+    require "socket"
+    server = TCPServer.new("127.0.0.1", 0)
+    port = server.addr[1]
+    accepted = 0
+    Thread.new { loop { server.accept.close; accepted += 1 } rescue IOError }
+    err = assert_raises(Tn3270::Error) { Tn3270::Engine.new(rows: 24, cols: 80, script_port: port) }
+    assert_includes err.message, "already in use"
+    assert_operator Tn3270::Engine.free_port(port), :>, port
+    assert_operator accepted, :<=, 2 # only our own "is it free?" probes
+  ensure
+    server&.close
+  end
 
   def test_attach_with_nothing_there
     err = assert_raises(Tn3270::Error) { Tn3270::Session.attach(port: PORT + 1) }

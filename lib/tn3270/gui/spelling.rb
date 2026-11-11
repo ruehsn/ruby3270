@@ -25,8 +25,7 @@ module Tn3270
       TRAIL = /[)"'\].,;:!?]+\z/
       PLAIN = /\A[[:alpha:]]+(?:'[[:alpha:]]+)?\z/
 
-      attr_reader :checker
-      attr_accessor :min_field
+      attr_reader :checker, :min_field
 
       def initialize(checker, min_field: 20, ignored: [])
         @checker = checker
@@ -34,6 +33,12 @@ module Tn3270
         @ignored = ignored.to_set { |w| w.downcase }
         @known = {}
         @memo = nil
+      end
+
+      # Shortest input field that gets checked.
+      def min_field=(length)
+        @memo = nil unless length == @min_field
+        @min_field = length
       end
 
       def ignore(word)
@@ -56,13 +61,14 @@ module Tn3270
       def ignored?(word) = @ignored.include?(word.downcase)
 
       # Every misspelled word on the screen, in screen order. Remembers the
-      # answer for the last screen object, so it's cheap to call per frame.
+      # answer for the last screen's fields, so it's cheap to call per frame
+      # (a cursor move gives a new Screen with the same fields).
       def misspelled(screen)
         return [] unless screen
-        return @memo[1] if @memo && @memo[0].equal?(screen)
+        return @memo[1] if @memo && @memo[0].equal?(screen.fields)
 
         words = checked_fields(screen).flat_map { |f| misspelled_in(f, screen.cols, screen.rows) }
-        @memo = [screen, words]
+        @memo = [screen.fields, words]
         words
       end
 

@@ -87,10 +87,11 @@ module Tn3270
 
       def draw_misspellings(scr, cw, ch, ox, oy)
         shown, words = @misspelled
-        return unless shown.equal?(scr) # not checked yet: the pump will
+        return unless scr.same_content?(shown) # not checked yet: the pump will
+        return unless @spelling # not `spelling`: that can open the checker and read files
 
         words.each do |word|
-          spelling.cells(word, scr.cols, scr.rows).group_by(&:first).each do |row, cells|
+          @spelling.cells(word, scr.cols, scr.rows).group_by(&:first).each do |row, cells|
             cols = cells.map(&:last)
             squiggle(ox + (cols.min * cw), ox + ((cols.max + 1) * cw), oy + ((row + 1) * ch), ch)
           end

@@ -273,7 +273,6 @@ module Tn3270
 
       def ui_line_h(size = TerminalWindow::UI_SIZE) = FontMetrics.for(TerminalWindow::UI_FONT)[:line] * size
 
-      # Cuts text to roughly fit a width (UI font), ending in "...".
       # The grey line under a name: the snippet's text, or for a script the
       # first line of its description.
       def item_subtitle(item)
@@ -283,6 +282,7 @@ module Tn3270
         "Script: #{about.empty? ? File.basename(item.script) : about}"
       end
 
+      # Cuts text to roughly fit a width (UI font), ending in "...".
       def fit_text(text, width, size = TerminalWindow::UI_SIZE)
         text = text.to_s.tr("\n", " ")
         max = (width / (size * 0.62)).floor

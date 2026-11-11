@@ -116,6 +116,24 @@ class SnippetLibraryTest < Minitest::Test
     assert_match(/c\.yml/, @lib.errors.first)
   end
 
+  # Saving to a file that couldn't be read would leave only the new snippet in it.
+  def test_a_broken_file_is_not_written_until_it_is_fixed
+    broken = File.join(@team, "c.yml")
+    File.write(broken, "- name: Keep me\n  text: [oops")
+    @lib.reload_if_changed
+    assert_match(/c\.yml/, @lib.errors.first)
+    assert @lib.unreadable?(broken)
+    refute @lib.writable?(broken)
+    refute_includes @lib.writable_files, broken
+    assert @lib.writable?(File.join(@team, "a.yml"))
+    File.write(broken, [{ "name" => "Keep me", "text" => "ok" }].to_yaml)
+    File.utime(Time.now + 5, Time.now + 5, broken) # a new time stamp, whatever the clock's resolution
+    @lib.reload_if_changed
+    refute @lib.unreadable?(broken)
+    assert @lib.writable?(broken)
+    assert_includes @lib.items.map(&:name), "Keep me"
+  end
+
   def test_shared_entries_are_added_and_removed
     other = File.join(@dir, "other.yml")
     L.create_file(other)

@@ -69,6 +69,9 @@ module Tn3270
         file = @files[UI.combobox_selected(@file)]
         return UI.label_set_text(@error, "Give the snippet a name.") if name.empty?
         return UI.label_set_text(@error, "Type the text the snippet should type.") if text.strip.empty?
+        if file && @library.unreadable?(file)
+          return UI.label_set_text(@error, "#{File.basename(file)} couldn't be read. Fix or remove that file first, or pick another.")
+        end
         return UI.label_set_text(@error, "Can't write to #{file}.") unless file && @library.writable?(file)
 
         unknown = Snippet.unknown_tokens(text).uniq

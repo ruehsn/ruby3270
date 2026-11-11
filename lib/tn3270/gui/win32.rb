@@ -85,7 +85,7 @@ module Tn3270
           end
         end
         unless at
-          pt = Fiddle::Pointer.malloc(8)
+          pt = Fiddle::Pointer.malloc(8, Fiddle::RUBY_FREE)
           fn("GetCursorPos", [P]).call(pt)
           at = pt[0, 8].unpack("l2")
         end
@@ -340,7 +340,7 @@ module Tn3270
         def popup
           return unless usable?
 
-          pt = Fiddle::Pointer.malloc(8)
+          pt = Fiddle::Pointer.malloc(8, Fiddle::RUBY_FREE)
           Win32.fn("GetCursorPos", [P]).call(pt)
           x, y = pt[0, 8].unpack("l2")
           Win32.fn("SetForegroundWindow", [P]).call(@hwnd)
@@ -353,7 +353,7 @@ module Tn3270
           return [] unless usable?
 
           @names ||= Array.new(Win32.fn("GetMenuItemCount", [P]).call(@bar)) do |i|
-            buf = Fiddle::Pointer.malloc(256)
+            buf = Fiddle::Pointer.malloc(256, Fiddle::RUBY_FREE)
             len = Win32.fn("GetMenuStringW", [P, I, P, I, I]).call(@bar, i, buf, 127, MF_BYPOSITION)
             buf[0, len * 2].force_encoding("UTF-16LE").encode("UTF-8").delete("&")
           end
@@ -392,7 +392,7 @@ module Tn3270
         private
 
         def item_text(menu, pos)
-          buf = Fiddle::Pointer.malloc(512)
+          buf = Fiddle::Pointer.malloc(512, Fiddle::RUBY_FREE)
           len = Win32.fn("GetMenuStringW", [P, I, P, I, I]).call(menu, pos, buf, 255, MF_BYPOSITION)
           buf[0, len * 2].force_encoding("UTF-16LE").encode("UTF-8")
         end
@@ -401,7 +401,7 @@ module Tn3270
 
         # SetMenuItemInfoW with only the text, so check marks are kept.
         def set_item_text(menu, pos, text)
-          info = Fiddle::Pointer.malloc(80) # MENUITEMINFOW (64-bit)
+          info = Fiddle::Pointer.malloc(80, Fiddle::RUBY_FREE) # MENUITEMINFOW (64-bit)
           info[0, 80] = "\0" * 80
           info[0, 8] = [80, MIIM_STRING].pack("L2")
           wide = Win32.wide(text)
@@ -486,7 +486,7 @@ module Tn3270
         # Hands a mouse press over to Windows as if it were on the title bar
         # (:caption, to move the window) or on the top border (to resize).
         def begin_drag(area = :caption)
-          pt = Fiddle::Pointer.malloc(8)
+          pt = Fiddle::Pointer.malloc(8, Fiddle::RUBY_FREE)
           Win32.fn("GetCursorPos", [P]).call(pt)
           x, y = pt[0, 8].unpack("l2")
           Win32.fn("ReleaseCapture", []).call

@@ -209,6 +209,20 @@ class ControllerTest < Minitest::Test
     sign_on_to("5", "Top of Data")
   end
 
+  def test_a_cursor_move_reuses_the_screen_and_typing_does_not
+    @c.connect("127.0.0.1:#{@host.port}")
+    wait_until { @c.screen_text.include?("USER ID") }
+    before = @c.snapshot
+    @c.press(:right)
+    wait_until { @c.snapshot.cursor_col == before.cursor_col + 1 }
+    assert @c.snapshot.same_content?(before), "only the cursor moved: nothing is parsed again"
+    refute_same before, @c.snapshot
+    @c.type("zq")
+    wait_until { @c.screen_text.include?("zq") }
+    refute @c.snapshot.same_content?(before)
+    assert_equal " zq", @c.snapshot.field_after("USER ID").value
+  end
+
   def test_paste_lines_up_under_the_starting_column
     open_editor
     @c.move_to(5, 17) # line 1, data column 10
@@ -393,6 +407,29 @@ no_such_method_here
     assert_includes @c.message, "line 2"
   end
 
+  # A script that can't type its password (here: into a heading) must not
+  # put the password in the status bar.
+  def test_startup_script_error_does_not_show_what_it_typed
+    conn = script_conn("typo.rb", "wait_for_text('USER ID')
+session.move_to(1, 1)
+type('hunter2')
+")
+    @c.connect(conn)
+    wait_until(15) { @c.message.to_s.start_with?("Startup script failed") }
+    assert_includes @c.message, "String(...)"
+    refute_includes @c.message, "hunter2"
+  end
+
+  def test_a_failed_snippet_does_not_show_what_it_typed
+    @c.connect("127.0.0.1:#{@host.port}")
+    wait_until { @c.screen_text.include?("USER ID") }
+    @c.move_to(0, 0)
+    @c.run_snippet("hunter2): tail", name: "Pw")
+    wait_until { @c.message }
+    refute_includes @c.message, "tail"
+    refute_includes @c.message, "hunter2"
+  end
+
   def test_startup_script_in_another_language
     skip "Windows batch file" unless Gem.win_platform?
     conn = script_conn("who.cmd", "@echo %TN3270_EMULATOR% %TN3270_SESSION%
@@ -448,24 +485,24 @@ no_such_method_here
     assert_includes @c.message, "not connected"
   end
 
-# Two windows: the second one takes the next free port instead of the first one's.
-def test_second_window_uses_the_next_free_port
-  require "socket"
-  server = TCPServer.new("127.0.0.1", 0) # stands in for the first window
-  taken = server.addr[1]
+  # Two windows: the second one takes the next free port instead of the first one's.
+  def test_second_window_uses_the_next_free_port
+    require "socket"
+    server = TCPServer.new("127.0.0.1", 0) # stands in for the first window
+    taken = server.addr[1]
     Thread.new { loop { server.accept.close } rescue IOError }
-  cfg = Tn3270::Gui::Config.load(File.join(@dir, "second.yml"))
-  cfg["allow_attach"] = true
-  cfg["script_port"] = taken
-  second = Tn3270::Gui::Controller.new(cfg, on_change: -> {})
-  wait_until { second.attach_port } # the engine starts in the background
-  refute_equal taken, second.attach_port
-  second.connect("127.0.0.1:#{@host.port}")
-  wait_until { second.screen_text.include?("USER ID") }
-ensure
-  second&.shutdown
-  server&.close
-end
+    cfg = Tn3270::Gui::Config.load(File.join(@dir, "second.yml"))
+    cfg["allow_attach"] = true
+    cfg["script_port"] = taken
+    second = Tn3270::Gui::Controller.new(cfg, on_change: -> {})
+    wait_until { second.attach_port } # the engine starts in the background
+    refute_equal taken, second.attach_port
+    second.connect("127.0.0.1:#{@host.port}")
+    wait_until { second.screen_text.include?("USER ID") }
+  ensure
+    second&.shutdown
+    server&.close
+  end
 
   # Esc while the keyboard is locked: Reset at once (not queued behind the
   # lock), and the keys typed meanwhile are dropped, not sent later.

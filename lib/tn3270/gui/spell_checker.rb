@@ -48,7 +48,7 @@ module Tn3270
           tag = [language, user_language, "en-US"].compact.find { |t| supported?(factory, t) }
           return nil unless tag
 
-          out = Fiddle::Pointer.malloc(Fiddle::SIZEOF_VOIDP)
+          out = Fiddle::Pointer.malloc(Fiddle::SIZEOF_VOIDP, Fiddle::RUBY_FREE)
           return nil unless com(factory, FACTORY_CREATE, [P, P], wide(tag), out) == S_OK
 
           new(out.ptr, tag)
@@ -61,7 +61,7 @@ module Tn3270
           factory = self.factory
           return [] unless factory
 
-          out = Fiddle::Pointer.malloc(Fiddle::SIZEOF_VOIDP)
+          out = Fiddle::Pointer.malloc(Fiddle::SIZEOF_VOIDP, Fiddle::RUBY_FREE)
           return [] unless com(factory, FACTORY_LANGUAGES, [P], out) == S_OK
 
           strings(out.ptr).sort
@@ -73,7 +73,7 @@ module Tn3270
           return @factory if defined?(@factory)
 
           ole32_fn("CoInitializeEx", [P, I]).call(nil, COINIT_APARTMENTTHREADED)
-          out = Fiddle::Pointer.malloc(Fiddle::SIZEOF_VOIDP)
+          out = Fiddle::Pointer.malloc(Fiddle::SIZEOF_VOIDP, Fiddle::RUBY_FREE)
           hr = ole32_fn("CoCreateInstance", [P, P, I, P, P]).call(
             guid(CLSID_FACTORY), nil, CLSCTX_INPROC_SERVER, guid(IID_FACTORY), out
           )
@@ -83,12 +83,12 @@ module Tn3270
         end
 
         def supported?(factory, tag)
-          ok = Fiddle::Pointer.malloc(4)
+          ok = Fiddle::Pointer.malloc(4, Fiddle::RUBY_FREE)
           com(factory, FACTORY_SUPPORTED, [P, P], wide(tag), ok) == S_OK && ok[0, 4].unpack1("l") != 0
         end
 
         def user_language
-          buf = Fiddle::Pointer.malloc(170)
+          buf = Fiddle::Pointer.malloc(170, Fiddle::RUBY_FREE)
           len = Fiddle::Function.new(dll("kernel32")["GetUserDefaultLocaleName"], [P, I], I).call(buf, 85)
           len.positive? ? buf[0, (len - 1) * 2].force_encoding("UTF-16LE").encode("UTF-8") : nil
         end
@@ -107,8 +107,8 @@ module Tn3270
         # Reads every string from an IEnumString and releases it.
         def strings(enum)
           result = []
-          item = Fiddle::Pointer.malloc(Fiddle::SIZEOF_VOIDP)
-          fetched = Fiddle::Pointer.malloc(4)
+          item = Fiddle::Pointer.malloc(Fiddle::SIZEOF_VOIDP, Fiddle::RUBY_FREE)
+          fetched = Fiddle::Pointer.malloc(4, Fiddle::RUBY_FREE)
           while com(enum, ENUM_NEXT, [I, P, P], 1, item, fetched) == S_OK
             ptr = item.ptr
             result << read_wide(ptr)
@@ -153,11 +153,11 @@ module Tn3270
       # Whether Windows knows the word (Windows' own ignore and dictionary
       # lists included).
       def correct?(word)
-        out = Fiddle::Pointer.malloc(Fiddle::SIZEOF_VOIDP)
+        out = Fiddle::Pointer.malloc(Fiddle::SIZEOF_VOIDP, Fiddle::RUBY_FREE)
         return true unless self.class.com(@obj, CHECK, [P, P], self.class.wide(word), out) == S_OK
 
         enum = out.ptr
-        err = Fiddle::Pointer.malloc(Fiddle::SIZEOF_VOIDP)
+        err = Fiddle::Pointer.malloc(Fiddle::SIZEOF_VOIDP, Fiddle::RUBY_FREE)
         found = self.class.com(enum, ENUM_NEXT, [P], err) == S_OK
         self.class.release(err.ptr) if found
         self.class.release(enum)
@@ -165,7 +165,7 @@ module Tn3270
       end
 
       def suggest(word)
-        out = Fiddle::Pointer.malloc(Fiddle::SIZEOF_VOIDP)
+        out = Fiddle::Pointer.malloc(Fiddle::SIZEOF_VOIDP, Fiddle::RUBY_FREE)
         return [] unless self.class.com(@obj, SUGGEST, [P, P], self.class.wide(word), out) >= 0
 
         self.class.strings(out.ptr) - [word]

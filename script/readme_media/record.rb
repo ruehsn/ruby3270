@@ -26,6 +26,10 @@ module PainterRecorder2
       super(*args, **kw)
     end
   end
+  def fill_rects(rects, rgb, alpha = 1.0)
+    rects.each { |x, y, w, h| @ops&.push(["fill_rect", x, y, w, h, rgb, alpha]) }
+    super
+  end
   def text(x, y, width, str, rgb, family, size, bold: false, align: :left, alpha: 1.0)
     @ops&.push(["text", x, y, width, str, rgb, size, bold, align.to_s, alpha, family.to_s])
     super

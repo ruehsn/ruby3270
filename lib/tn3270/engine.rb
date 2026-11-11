@@ -6,7 +6,21 @@ require_relative "process_job"
 
 module Tn3270
   class Error < StandardError; end
-  class ActionError < Error; end
+
+  # The engine refused an action. `action` is what was asked for ("PF(3)")
+  # and `detail` is the engine's reason. The message is "action: detail",
+  # but without the text of a String(...) action: that text is something
+  # typed, perhaps a password, and messages end up in status bars and logs.
+  class ActionError < Error
+    attr_reader :action, :detail
+
+    def initialize(message = nil, action: nil, detail: nil)
+      @action = action
+      @detail = detail || message
+      super(action ? "#{action.sub(/\AString\(.*\)\z/m, 'String(...)')}: #{detail}" : message)
+    end
+  end
+
   class TimeoutError < Error; end
 
   # Status line s3270 prints after every action.
@@ -168,7 +182,7 @@ module Tn3270
           elsif line == "ok"
             return data
           elsif line == "error"
-            raise ActionError, "#{action}: #{data.join(' ').strip}"
+            raise ActionError.new(action: action, detail: data.join(" ").strip)
           else
             @last_status = Status.parse(line)
           end
