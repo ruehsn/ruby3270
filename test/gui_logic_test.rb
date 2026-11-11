@@ -200,6 +200,63 @@ class ControllerTest < Minitest::Test
     wait_until { @c.screen_text.include?(screen_title) }
   end
 
+  # ---- multi-line paste, on the fake host's ISPF-style editor ----------------
+
+  def edit_row(row) = @c.screen_text.lines[row].to_s.chomp
+
+  def open_editor
+    sign_on_to("5", "Top of Data")
+  end
+
+  def test_paste_lines_up_under_the_starting_column
+    open_editor
+    @c.move_to(5, 17) # line 1, data column 10
+    @c.paste("JOBA
+  INDENTED
+LAST
+")
+    @c.press(:enter)
+    wait_until { edit_row(7)[17, 4] == "LAST" }
+    assert_equal "JOBA", edit_row(5)[17, 4]
+    assert_equal "  INDENTED", edit_row(6)[17, 10]
+    assert_equal %w[000100 000200 000300], (5..7).map { |r| edit_row(r)[0, 6] } # line numbers untouched
+  end
+
+  def test_paste_cuts_lines_at_the_end_of_the_field
+    open_editor
+    col = @c.cols - 10 # 9 columns before the end of the data field
+    @c.move_to(5, col)
+    @c.paste("1234567890
+abcdefghij")
+    wait_until { @c.message.to_s.include?("cut to fit") }
+    assert_equal "2 lines cut to fit the field", @c.message
+    @c.press(:enter)
+    wait_until { edit_row(5)[col, 9] == "123456789" }
+    assert_equal "000200", edit_row(6)[0, 6] # nothing spilled into the next line number
+    assert_equal "abcdefghi", edit_row(6)[col, 9]
+  end
+
+  def test_paste_stops_at_the_bottom_of_the_screen
+    open_editor
+    last = @c.rows - 4 # the editor's last row
+    @c.move_to(last, 7)
+    @c.paste("one
+two
+three")
+    wait_until { @c.message.to_s.include?("no room below") }
+    assert_equal "Pasted 1 of 3 lines (no room below)", @c.message
+    refute_includes edit_row(3), "two" # never wrapped round to the command line
+  end
+
+  def test_paste_into_a_form_uses_the_next_field_below
+    @c.connect("127.0.0.1:#{@host.port}")
+    wait_until { @c.screen_text.include?("USER ID") }
+    @c.paste("pasteuser
+secret")
+    @c.press(:enter)
+    wait_until { @c.screen_text.include?("Signed on as PASTEUSE") } # the user field holds 8
+  end
+
   def test_typeahead_and_response_time
     sign_on_to("4", "KEY TESTER (SLOW HOST)")
     @c.press(:enter) # the host takes 2 seconds to answer this
@@ -251,6 +308,33 @@ class ControllerTest < Minitest::Test
     @c.connect(conn)
     wait_until(15) { @c.message.to_s.start_with?("ruby3270|") }
     assert_equal "ruby3270|Prod LPAR|#{@host.port}|#{@c.attach_port}", @c.message
+  end
+
+  def test_a_script_from_a_script_folder_runs_on_the_session
+    config = @c.instance_variable_get(:@config)
+    config["script_port"] = 3390
+    config["allow_attach"] = false
+    config["script_folders"] = [@dir] # a script folder opens the port by itself
+    script = File.join(@dir, "sign_on.rb")
+    File.write(script, "# Signs on.\nfill('USER ID', 'folder')\nenter\nsession.wait_for_text('MAIN MENU')\nstatus 'done by ' + session_name\n")
+    @c.connect(Tn3270::Gui::Config::DEFAULT_CONNECTION.merge("name" => "Lpar", "port" => @host.port))
+    wait_until(15) { @c.screen_text.include?("USER ID") }
+    @c.run_script(script, "Sign on")
+    wait_until(15) { @c.message == "done by Lpar" }
+    wait_until { @c.screen_text.include?("Signed on as FOLDER") }
+  end
+
+  def test_a_failing_folder_script_says_which_one
+    config = @c.instance_variable_get(:@config)
+    config["script_port"] = 3390
+    config["script_folders"] = [@dir]
+    script = File.join(@dir, "broken.rb")
+    File.write(script, "raise 'no such job'\n")
+    @c.connect(Tn3270::Gui::Config::DEFAULT_CONNECTION.merge("name" => "Lpar", "port" => @host.port))
+    wait_until(15) { @c.screen_text.include?("USER ID") }
+    @c.run_script(script, "Broken")
+    wait_until(15) { @c.message.to_s.start_with?("Broken failed") }
+    assert_includes @c.message, "no such job"
   end
 
   def test_startup_script_does_not_block_typing

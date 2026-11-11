@@ -359,6 +359,24 @@ module Tn3270
           end
         end
 
+        # Sets item texts in the menus: `texts` maps an item's label (its text
+        # before any tab) to its new text, e.g. "Copy" => "Copy\tCtrl+C"
+        # (Windows right-aligns what follows the tab). Used when key bindings change.
+        def relabel(texts)
+          return unless usable?
+
+          Win32.fn("GetMenuItemCount", [P]).call(@bar).times do |i|
+            sub = Win32.fn("GetSubMenu", [P, I], P).call(@bar, i)
+            next if sub.null?
+
+            Win32.fn("GetMenuItemCount", [P]).call(sub).times do |j|
+              old = item_text(sub, j)
+              text = texts[old.split("\t").first]
+              set_item_text(sub, j, text) if text && text != old
+            end
+          end
+        end
+
         # Opens one top-level menu with its top-left corner at a screen point.
         # Blocks until the menu closes.
         def popup_submenu(index, x, y)
@@ -372,6 +390,24 @@ module Tn3270
         end
 
         private
+
+        def item_text(menu, pos)
+          buf = Fiddle::Pointer.malloc(512)
+          len = Win32.fn("GetMenuStringW", [P, I, P, I, I]).call(menu, pos, buf, 255, MF_BYPOSITION)
+          buf[0, len * 2].force_encoding("UTF-16LE").encode("UTF-8")
+        end
+
+        MIIM_STRING = 0x40
+
+        # SetMenuItemInfoW with only the text, so check marks are kept.
+        def set_item_text(menu, pos, text)
+          info = Fiddle::Pointer.malloc(80) # MENUITEMINFOW (64-bit)
+          info[0, 80] = "\0" * 80
+          info[0, 8] = [80, MIIM_STRING].pack("L2")
+          wide = Win32.wide(text)
+          info[56, 8] = [wide.to_i].pack("Q")
+          Win32.fn("SetMenuItemInfoW", [P, I, I, P]).call(menu, pos, 1, info)
+        end
 
         # A popup whose entries are the menu bar's own submenus (shared, so
         # check marks stay in sync).

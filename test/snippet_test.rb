@@ -125,3 +125,63 @@ class SnippetLibraryTest < Minitest::Test
     refute_includes @lib.files, other
   end
 end
+
+class ScriptFolderTest < Minitest::Test
+  L = Tn3270::Gui::SnippetLibrary
+  Info = Tn3270::Gui::ScriptInfo
+
+  def setup
+    @dir = Dir.mktmpdir
+    @scripts = File.join(@dir, "scripts")
+    Dir.mkdir(@scripts)
+    @config = Tn3270::Gui::Config.load(File.join(@dir, "cfg.yml"))
+    @config["personal_snippets"] = File.join(@dir, "mine.yml")
+    @config["script_folders"] = [@scripts]
+  end
+
+  def teardown = FileUtils.remove_entry(@dir)
+
+  def script(name, text) = File.join(@scripts, name).tap { |p| File.write(p, text) }
+
+  def test_name_and_description_come_from_the_header_comments
+    path = script("release_held.rb", "#!/usr/bin/env ruby\n# frozen_string_literal: true\n\n" \
+                                     "# Name: Release held jobs\n# Releases every held job in SDSF.\n#\n# Takes about 10 seconds.\n\n" \
+                                     "# not part of the header\nputs 1\n")
+    assert_equal ["Release held jobs", "Releases every held job in SDSF.\n\nTakes about 10 seconds."], Info.read(path)
+  end
+
+  def test_without_a_name_line_the_file_name_is_used
+    assert_equal ["Sign on to cics", "Logs on to CICS."], Info.read(script("sign_on-to_cics.ps1", "# Logs on to CICS.\nWrite-Output hi\n"))
+    assert_equal ["Nightly", ""], Info.read(script("nightly.rb", "puts 1\n"))
+  end
+
+  def test_each_language_has_its_comments
+    assert_equal ["Batch", "From batch."], Info.read(script("batch.bat", "@echo off\nREM Name: Batch\n:: From batch.\necho hi\n"))
+    assert_equal ["Vb", "From VBScript."], Info.read(script("vb.vbs", "' From VBScript.\nWScript.Echo 1\n"))
+    assert_equal ["Js", "From JScript."], Info.read(script("js.js", "// From JScript.\n"))
+  end
+
+  def test_scripts_are_listed_after_snippets_and_never_written_to
+    script("b_job.rb", "# Second.\n")
+    script("a_job.py", "# First.\n")
+    script("notes.txt", "not a script\n")
+    lib = L.new(@config)
+    lib.reload_if_changed
+    assert_equal ["A job", "B job"], lib.items.map(&:name)
+    assert lib.items.all?(&:script?)
+    assert_equal File.join(@scripts, "a_job.py"), lib.items.first.script
+    refute lib.writable?(lib.items.first.file)
+    refute_includes lib.writable_files, lib.items.first.file
+    assert_equal ["B job"], lib.search("second").map(&:name) # the description is searched too
+  end
+
+  def test_a_changed_script_reloads
+    path = script("job.rb", "# Old.\n")
+    lib = L.new(@config)
+    lib.reload_if_changed
+    File.write(path, "# New description.\n")
+    File.utime(Time.now + 5, Time.now + 5, path)
+    assert lib.reload_if_changed
+    assert_equal "New description.", lib.items.first.text
+  end
+end

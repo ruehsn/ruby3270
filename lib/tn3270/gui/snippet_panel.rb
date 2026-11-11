@@ -82,6 +82,10 @@ module Tn3270
         return unless item
 
         @snip_focus = false
+        if item.script?
+          @controller.run_script(item.script, item.name)
+          return redraw
+        end
         vars = {}
         vars[:clipboard] = Clipboard.paste if item.text.match?(/\{clipboard\}/i)
         go = ->(answers) { @controller.run_snippet(item.text, answers: answers, vars: vars, name: item.name) }
@@ -102,6 +106,8 @@ module Tn3270
       end
 
       def edit_snippet(item, text: nil, name: nil)
+        return open_in_editor(item.script) if item&.script?
+
         @snippet_editor = SnippetEditor.new(library, item, text: text, name: name, on_saved: -> { snippets_changed })
         @snippet_editor.show
       end
@@ -131,6 +137,10 @@ module Tn3270
 
       def delete_snippet(item)
         return unless item
+        if item.script?
+          return msg_box("Snippets", "\"#{item.name}\" is a script in a script folder:\n#{item.script}\n" \
+                                     "Delete or move the file to take it off the list.")
+        end
         return msg_box("Snippets", "\"#{item.name}\" is in a file you can't change:\n#{item.file}") unless library.writable?(item.file)
 
         library.delete(item)
@@ -264,6 +274,15 @@ module Tn3270
       def ui_line_h(size = TerminalWindow::UI_SIZE) = FontMetrics.for(TerminalWindow::UI_FONT)[:line] * size
 
       # Cuts text to roughly fit a width (UI font), ending in "...".
+      # The grey line under a name: the snippet's text, or for a script the
+      # first line of its description.
+      def item_subtitle(item)
+        return item.text unless item.script?
+
+        about = item.text.lines.first.to_s.strip
+        "Script: #{about.empty? ? File.basename(item.script) : about}"
+      end
+
       def fit_text(text, width, size = TerminalWindow::UI_SIZE)
         text = text.to_s.tr("\n", " ")
         max = (width / (size * 0.62)).floor
@@ -321,7 +340,7 @@ module Tn3270
           name_w = inner - (key ? FontMetrics.text_width(TerminalWindow::UI_FONT, TerminalWindow::UI_SIZE, key) + 10 : 0)
           ui_text(x, ry + 3, fit_text(item.name, name_w), TerminalWindow::WHITE)
           ui_text(x0 + PANEL_W - 12 - FontMetrics.text_width(TerminalWindow::UI_FONT, TerminalWindow::UI_SIZE, key), ry + 3, key, TerminalWindow::TITLE_MUTED) if key
-          ui_text(x, ry + 3 + ui_line_h, fit_text(item.text, inner), TerminalWindow::TITLE_MUTED)
+          ui_text(x, ry + 3 + ui_line_h, fit_text(item_subtitle(item), inner), TerminalWindow::TITLE_MUTED)
           @snip_hits << [x0, ry, PANEL_W, ROW_H - 2, [:row, index]]
         end
         ui_text(x, list_bottom + 2, fit_text(library.errors.first, inner), RED) if library.errors.any?
@@ -372,7 +391,7 @@ module Tn3270
             draw_setting_row(item, x, y, bw, line)
           else
             ui_text(x + 8, y + 4, fit_text(item.name, bw - 40), TerminalWindow::WHITE)
-            ui_text(x + 8, y + 4 + line, fit_text(item.text, bw - 40), TerminalWindow::TITLE_MUTED)
+            ui_text(x + 8, y + 4 + line, fit_text(item_subtitle(item), bw - 40), TerminalWindow::TITLE_MUTED)
           end
           @picker_hits << [bx, y, bw, rh, [:run, item]]
           y += rh

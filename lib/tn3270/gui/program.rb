@@ -66,6 +66,7 @@ module Tn3270
 
       def reload_bindings
         @bindings = Keymap.bindings(@config["keys"])
+        @windows.each { |w| w.command(:relabel_menus, menu_texts) }
         @windows.each { |w| w.command(:redraw) }
       end
 
@@ -358,10 +359,33 @@ module Tn3270
 
       # ---- menus ---------------------------------------------------------------------
 
+      # Key binding action shown as a menu item's shortcut, by menu command.
+      SHORTCUTS = { new_tab: "new_tab", close_tab: "close_tab", copy: "copy", paste: "paste", show_find: "find",
+                    open_picker: "snippet_picker", show_history: "history", caps: "caps",
+                    crosshair: "crosshair", snippet_bar: "snippet_bar" }.freeze
+
+      # A menu item's text: the label, then (Windows) a tab and its key, which
+      # Windows lines up on the right: "Copy<tab>Ctrl+C".
+      def menu_text(label, action)
+        key = action && Keymap.keys_for(@bindings, action).first
+        key && Win32.available? ? "#{label}\t#{key}" : label
+      end
+
+      # Every menu item with a shortcut, as label => text, for the menus of
+      # each window (after the key bindings change, or for a new window).
+      def menu_texts = (@shortcuts || {}).to_h { |label, action| [label, menu_text(label, action)] }
+      public :menu_texts
+
+      def shortcut_label(label, action)
+        (@shortcuts ||= {})[label] = action if action
+        menu_text(label, action)
+      end
+
       # A menu item that runs `cmd` in the window it was clicked in (or the
-      # block, given that window).
-      def item(menu, label, cmd = nil, *args, &block)
-        it = UI.menu_append_item(menu, label)
+      # block, given that window). Its key, if one is bound, shows on the right.
+      def item(menu, label, cmd = nil, *args, shortcut: nil, &block)
+        shortcut ||= SHORTCUTS[cmd] || (args.first.to_s if cmd == :send_key)
+        it = UI.menu_append_item(menu, shortcut_label(label, shortcut))
         UI.menu_item_on_clicked(it) do |_sender, win, _data|
           w = window_for(win)
           block ? block.call(w) : w&.command(cmd, *args)
@@ -372,7 +396,7 @@ module Tn3270
 
       def check_item(menu, label, checked, name = label, words: nil, &block)
         @toggles[name] = { label: label, words: words, block: block }
-        it = UI.menu_append_check_item(menu, label)
+        it = UI.menu_append_check_item(menu, shortcut_label(label, SHORTCUTS[name]))
         UI.menu_item_set_checked(it, Ui.flag(checked))
         @checks[name] = checked
         UI.menu_item_on_clicked(it) do |_sender, win, _data|
@@ -388,7 +412,7 @@ module Tn3270
         c = @config
         m = UI.new_menu("Session")
         item(m, "New Tab", :new_tab)
-        item(m, "New Window") { new_window }
+        item(m, "New Window", shortcut: "new_window") { new_window }
         item(m, "Duplicate Tab", :duplicate_tab)
         item(m, "Rename Tab", :rename_tab)
         item(m, "Edit Session...", :edit_session)
@@ -451,6 +475,7 @@ module Tn3270
           UI.menu_append_separator(m)
           check_item(m, "Spell Check (long input fields)", c["spell_check"], words: "spelling spellcheck") { |_w, on| for_all(:set_spell_check, on) }
           item(m, "Spell Check Language...", :choose_spell_language)
+          item(m, "Edit My Spelling Words...", :edit_spell_words)
           UI.menu_append_separator(m)
           check_item(m, "Lock Window Shape to the Screen", c["lock_ratio"], words: "aspect ratio resize") { |_w, on| for_all(:set_lock_ratio, on) }
         end

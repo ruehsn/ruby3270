@@ -3,6 +3,7 @@
 require "yaml"
 require "time"
 require_relative "config"
+require_relative "spell_words"
 
 module Tn3270
   module Gui
@@ -17,7 +18,7 @@ module Tn3270
       MARK = "ruby3270_settings"
       FORMAT = 1
       # Never exported, never imported.
-      LOCAL = %w[recent last_connection engine personal_snippets connections welcome_imported].freeze
+      LOCAL = %w[recent last_connection engine personal_snippets personal_spelling connections welcome_imported].freeze
 
       module_function
 
@@ -28,6 +29,8 @@ module Tn3270
 
           h[key] = config[key]
         end
+        words = SpellWords.personal(config)
+        options["spell_ignore"] = words unless words.empty? # your word file's words
         {
           MARK => FORMAT,
           "exported" => Time.now.iso8601,
@@ -119,8 +122,10 @@ module Tn3270
       # Returns the snippets to add or replace in your own file.
       def apply(bundle, config)
         bundle["options"].each do |key, value|
+          next SpellWords.add(config, value) if key == "spell_ignore" # into your word file
+
           config[key] = case key
-                        when "spell_ignore", "snippet_files" then (Array(config[key]) + Array(value)).uniq
+                        when "snippet_files", "spell_word_files", "script_folders" then (Array(config[key]) + Array(value)).uniq
                         when "keys" then (config["keys"] || {}).merge(value.is_a?(Hash) ? value : {})
                         else value
                         end

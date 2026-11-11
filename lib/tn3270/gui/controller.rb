@@ -3,6 +3,7 @@
 require_relative "../session"
 require_relative "config"
 require_relative "startup_script"
+require_relative "paste"
 require_relative "../snippet"
 
 module Tn3270
@@ -41,7 +42,8 @@ module Tn3270
         def screen = Screen.from_buffer(lines, status)
       end
 
-      attr_reader :attach_port, :snapshot, :message, :insert_mode, :history, :rows, :cols, :last_target, :response_time
+      attr_reader :attach_port, :snapshot, :message, :insert_mode, :history, :rows, :cols, :last_target, :response_time,
+                  :last_heard # when the host last sent data (a Time), or nil
 
       # Keystrokes waiting for the keyboard to unlock.
       def typeahead_count = @typeahead.size
@@ -256,13 +258,14 @@ module Tn3270
 
       def auto_enter_seconds = (@config["auto_enter_seconds"] || 2).to_f
 
-      # Pasted lines go into successive input fields.
+      # Pastes text at the cursor. Several lines line up under the cursor's
+      # column, one row down each (see Paste).
       def paste(text)
         enqueue(input: true) do
-          text.split("\n").each_with_index do |line, i|
-            @session.press(:newline, wait: false) if i.positive?
-            @session.type(line) unless line.empty?
-          end
+          screen = @session.screen
+          steps, note = Paste.plan(screen, screen.cursor_row, screen.cursor_col, text.delete("\r").split("\n"))
+          steps.each { |op, *args| op == :move ? @session.move_to(*args) : @session.type(*args) }
+          @message = note if note
         end
       end
 
@@ -338,7 +341,11 @@ module Tn3270
 
       # The port scripts attach to, when Session > Allow Scripts to Attach is
       # on or the connection has a startup script (it attaches through it).
-      def wanted_port = @config["allow_attach"] || @script_wants_port ? @config["script_port"].to_i : nil
+      # Scripts (startup, from a script folder, or your own) attach through the port.
+      def wanted_port
+        want = @config["allow_attach"] || @script_wants_port || Array(@config["script_folders"]).any?
+        want ? @config["script_port"].to_i : nil
+      end
 
       # The first free port from the configured one, so several windows can
       # each be attached to; nil when attaching is off or no port is free.
@@ -505,6 +512,43 @@ module Tn3270
       def stop_startup_script
         StartupScript.stop(@startup_script)
         @startup_script = nil
+        (@scripts || []).each { |s| StartupScript.stop(s) } # ones run from the snippet list
+        @scripts = []
+      end
+
+      public
+
+      # Runs a script from a script folder against this session, in the
+      # background, like a startup script: what it prints shows in the
+      # status bar, and it ends when the tab disconnects, reconnects or closes.
+      def run_script(path, name)
+        enqueue do
+          if !connected?
+            @message = "Connect first, then run \"#{name}\""
+          elsif !@attach_port
+            @message = "\"#{name}\" not run: the session has no script port yet. Reconnect to open one"
+          else
+            start_script(path, name)
+          end
+          notify
+        end
+      end
+
+      private
+
+      def start_script(path, name)
+        running = @message = "Running #{name}..."
+        on_status = lambda do |text|
+          @message = text
+          notify
+        end
+        on_exit = lambda do |error|
+          @message = error ? error.sub(StartupScript::FAILED, "#{name} failed").sub("Startup script", name) : (@message == running ? nil : @message)
+          notify
+        end
+        @scripts = (@scripts || []).select(&:alive?)
+        run = StartupScript.start(path, @last_target || {}, @attach_port, on_status: on_status, on_exit: on_exit)
+        @scripts << run if run
       end
 
       public
@@ -614,6 +658,7 @@ module Tn3270
         return if sig == @signature
 
         @signature = sig
+        note_heard(status)
         @raw = [lines, status]
         @snapshot = Screen.from_buffer(lines, status)
         @connecting_since = nil if @snapshot.status&.connected?
@@ -623,6 +668,17 @@ module Tn3270
         @gave_up = nil
         revive_engine
         notify
+      end
+
+      # When the screen changed: if the host sent something, notes the time
+      # (last_heard, shown in the status bar). Typing changes the screen too,
+      # so the host's record count decides.
+      def note_heard(status)
+        return @rx_count = nil unless status&.connected?
+
+        count = records_received
+        @last_heard = Time.now if @rx_count.nil? ? count.positive? : count > @rx_count
+        @rx_count = count
       end
 
       # Stops the response timer when the host answers the last AID key.

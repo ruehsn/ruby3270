@@ -81,6 +81,7 @@ module Tn3270
         Win32.set_icon(@window)
         if Win32.available?
           @menu_bar = Win32::MenuBar.new(@window)
+          relabel_menus(@program.menu_texts) # shortcuts, in case the keys changed since the menus were made
           @title_bar = Win32::TitleBar.new(@window)
           @title_bar.install if @config["custom_title_bar"] && @menu_bar.usable?
         end
@@ -97,6 +98,8 @@ module Tn3270
       def command(name, *args) = send(name, *args)
 
       def ui_window = @window
+
+      def relabel_menus(texts) = @menu_bar&.relabel(texts)
       def hwnd_ptr = @window.to_i # libui's window pointer, as menu clicks report it
       def hwnd_i = Win32.hwnd(@window).to_i
 
@@ -775,7 +778,7 @@ module Tn3270
 
         st = scr&.status
         connected = st&.connected?
-        left = if connected then st.host.to_s
+        left = if connected then host_timing
                elsif @controller.connecting? then "Connecting..."
                else "Disconnected - click the dot to connect"
                end
@@ -793,17 +796,15 @@ module Tn3270
                 end
         mid = [lock, @controller.insert_mode ? "INSERT" : "", ahead, sel, @controller.message.to_s].reject(&:empty?).join("   ")
 
-        # Right side, from the edge inwards: position, response time, CAPS.
-        right = connected ? format("%dx%d  %03d/%03d", st.rows, st.cols, st.cursor_row + 1, st.cursor_col + 1) : ""
+        # Right side, from the edge inwards: cursor position (hover: screen size), CAPS...
+        right = connected ? cursor_position(st) : ""
         right_x = w - 10 - (right.size * cw)
-        status_text(right_x, text_y, right, PALETTE[:turquoise], size, cw, font) unless right.empty?
+        unless right.empty?
+          status_text(right_x, text_y, right, PALETTE[:turquoise], size, cw, font)
+          @status_hits[:position] = [right_x - (cw / 2.0), y, (right.size + 1) * cw, STATUS_H]
+        end
 
         rx = right_x
-        if connected && (t = @controller.response_time)
-          timing = t < 10 ? format("%.2fs", t) : format("%.0fs", t)
-          rx -= (timing.size + 3) * cw
-          status_text(rx, text_y, timing, TITLE_MUTED, size, cw, font)
-        end
         rx = draw_toggle(:caps, "CAPS", @config["caps"], rx - (cw * 2), y, cw, size, font, text_y)
         rx = draw_toggle(:fk, "FK", keybar_shown?, rx - cw, y, cw, size, font, text_y)
         rx = draw_toggle(:auto_enter, "ENTER", @controller.auto_enter?, rx - cw, y, cw, size, font, text_y)
@@ -813,6 +814,21 @@ module Tn3270
         line = (left.ljust(24) + mid)[0, max_chars]
         fg = !lock.empty? || @controller.message ? PALETTE[:yellow] : PALETTE[:turquoise]
         status_text(x, text_y, line, fg, size, cw, font)
+      end
+
+      # "05/12": cursor row/column, with as many digits as the screen size
+      # needs (24 x 80: 2 and 2; 27 x 132: 2 and 3).
+      def cursor_position(st)
+        format("%0*d/%0*d", st.rows.to_s.size, st.cursor_row + 1, st.cols.to_s.size, st.cursor_col + 1)
+      end
+
+      # The host's response time and when it last sent anything, where the
+      # host name used to be: "0.12s  heard 14:03:27".
+      def host_timing
+        t = @controller.response_time
+        heard = @controller.last_heard
+        [(t < 10 ? format("%.2fs", t) : format("%.0fs", t) if t),
+         ("heard #{heard.strftime('%H:%M:%S')}" if heard)].compact.join("  ")
       end
 
       # An on/off button in the status bar, ending at `right` (CAPS: the app's
@@ -1005,9 +1021,11 @@ module Tn3270
            "Shows a bar of buttons: PF1-PF24, Reset, Clear, Attn, New Line and SysReq.",
            "Click to #{keybar_shown? ? 'hide' : 'show'} it."]
         when :connection
-          ["Connection: green = connected, amber = connecting, grey = not connected",
-           "Click to #{@controller.connected? || @controller.connecting? ? 'disconnect' : 'connect'}.",
-           ("Scripts can attach to this session on port #{@controller.attach_port}." if @controller.attach_port)].compact
+          connection_tip
+        when :position
+          st = @controller.snapshot&.status
+          st && ["Cursor: row #{st.cursor_row + 1}, column #{st.cursor_col + 1}",
+                 "Screen size: #{st.rows} x #{st.cols}"]
         when :menu
           ["Menus", "Click to open the menus."]
         when :snip
@@ -1016,8 +1034,32 @@ module Tn3270
            "#{keys_label('snippet_picker')} finds one by name without the list. Click to #{snippet_bar_shown? ? 'hide' : 'show'} it."]
         when Array # a snippet in the sidebar: its text
           item = panel_items[hit[1]]
-          item && [item.name, *item.text.lines.map(&:rstrip).first(10), ("..." if item.text.lines.size > 10)].compact
+          if item&.script?
+            [item.name, *item.text.lines.map(&:rstrip), "Script: #{File.basename(item.script)}", "Double-click to run it; Edit opens the file."]
+          elsif item
+            [item.name, *item.text.lines.map(&:rstrip).first(10), ("..." if item.text.lines.size > 10)].compact
+          end
         end
+      end
+
+      # The status light's tooltip: state, where to, timings, what a click does.
+      def connection_tip
+        c = @controller
+        state = if c.connected? then "Connected"
+                elsif c.connecting? then "Connecting"
+                else "Not connected"
+                end
+        target = c.last_target && Config.display_string(c.last_target)
+        heading = target ? "#{state}: #{target}" : state
+        t = c.response_time
+        timing = [("Response time: #{format('%.2fs', t)}" if t && c.connected?),
+                  ("last heard from the host at #{c.last_heard.strftime('%H:%M:%S')}" if c.last_heard && c.connected?)].compact
+        [heading,
+         ("Session: #{c.last_target['name']}" if c.last_target && c.last_target["name"].to_s != target),
+         (timing.join(", ") unless timing.empty?),
+         "Green = connected, amber = connecting, grey = not connected.",
+         "Click to #{c.connected? || c.connecting? ? 'disconnect' : 'connect'}.",
+         ("Scripts can attach to this session on port #{c.attach_port}." if c.attach_port)].compact
       end
 
       # Where the thing the tooltip describes is: [x, y, w, h].
@@ -1037,7 +1079,8 @@ module Tn3270
 
         pad = 8
         line_h = FontMetrics.for(UI_FONT)[:line] * UI_SIZE
-        widths = lines.map { |t| FontMetrics.text_width(UI_FONT, UI_SIZE, t) }
+        # The heading is bold, so it's wider; measured as drawn, or it wraps onto the next line.
+        widths = lines.each_with_index.map { |t, i| FontMetrics.text_width(UI_FONT, UI_SIZE, t, bold: i.zero?).ceil + 2 }
         bw = widths.max + (2 * pad) + 6
         bh = (lines.size * line_h) + (2 * pad)
         if hit.is_a?(Array) # a snippet row: to the left of the sidebar
@@ -1272,6 +1315,7 @@ module Tn3270
             when :fk then @program.for_all(:toggle_keybar, !keybar_shown?)
             when :auto_enter then set_auto_enter(!@controller.auto_enter?)
             when :snip then @program.for_all(:toggle_snippet_bar, !snippet_bar_shown?)
+            when :position then nil # its tooltip shows the screen size
             else toggle_connection
             end
           end

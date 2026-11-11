@@ -41,13 +41,15 @@ module Tn3270
         "spell_check" => true, # Windows: red wavy underline under misspelled words in long input fields
         "spell_min_field" => 20, # ...fields at least this long (shorter ones usually hold codes)
         "spell_language" => nil, # e.g. "en-GB"; nil = the Windows display language
-        "spell_ignore" => [], # words never flagged ("Ignore" on the right-click menu adds here)
+        "personal_spelling" => nil, # your word list file (nil: ~/.ruby3270-spelling.txt; right-click > Ignore adds to it)
+        "spell_word_files" => [], # more word lists never flagged, e.g. a team file (see SpellWords)
         "custom_title_bar" => true, # Windows: menus drawn inside the title bar, VS Code style
         "lock_ratio" => true, # Windows: resizing keeps the window the shape of the screen, so there's no empty band
         "key_bar" => false, # the on-screen PF / Reset / Clear... key bar
         "snippet_bar" => false, # the snippets sidebar
         "personal_snippets" => nil, # your snippet file (nil: ~/.ruby3270-snippets.yml)
         "snippet_files" => [], # shared snippet files or folders, e.g. a team file on a network drive
+        "script_folders" => [], # folders of scripts (.rb, .ps1, .bat...) listed with the snippets; picking one runs it
         "snippet_wait_seconds" => 30, # how long {wait:TEXT} in a snippet waits
         "single_instance" => true, # a second launch opens its session as a tab in the running app
         "allow_attach" => true, # let scripts on this computer drive the open session (Tn3270::Session.attach)

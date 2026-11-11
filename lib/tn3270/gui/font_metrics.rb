@@ -36,22 +36,22 @@ module Tn3270
       end
 
       # Width in pixels of `text` at a font size (cached).
-      def text_width(family, size, text)
+      def text_width(family, size, text, bold: false)
         @widths ||= {}
-        @widths[[family, size, text]] ||= begin
-          extents(family, text, size: size)[0]
+        @widths[[family, size, text, bold]] ||= begin
+          extents(family, text, size: size, bold: bold)[0]
         rescue StandardError
           text.size * size * 0.55
         end
       end
 
-      def extents(family, text, size: SAMPLE_SIZE)
+      def extents(family, text, size: SAMPLE_SIZE, bold: false)
         str = ::LibUI.new_attributed_string(text)
         family_ptr = Fiddle::Pointer["#{family}\0"]
         font = ::LibUI::FFI::FontDescriptor.malloc
         font.Family = family_ptr
         font.Size = size
-        font.Weight = ::LibUI::TextWeightNormal
+        font.Weight = bold ? ::LibUI::TextWeightBold : ::LibUI::TextWeightNormal
         font.Italic = ::LibUI::TextItalicNormal
         font.Stretch = ::LibUI::TextStretchNormal
         params = ::LibUI::FFI::DrawTextLayoutParams.malloc

@@ -6,9 +6,15 @@ module Tn3270
   # A tiny TN3270 host for testing without a mainframe.
   #
   # It speaks plain TN3270 (not TN3270E), asks the terminal for its screen
-  # size with a Read Partition Query, then serves three screens:
-  #   LOGIN -> MENU -> KEYS (a key tester that shows the last AID pressed).
+  # size with a Read Partition Query, then serves these screens:
+  #   LOGIN -> MENU -> KEYS (a key tester that shows the last AID pressed),
+  #                    COLORS, or EDIT (an ISPF-style editor, see below).
   # PF3 goes back, PF12 or "LOGOFF" disconnects.
+  #
+  # EDIT works like ISPF EDIT: each row is a line-number field (columns 0-5,
+  # takes line commands: I inserts a line, D deletes one) and a data field
+  # (columns 7 to the second last). Enter keeps changes, PF7/PF8
+  # scroll, PF3 saves and goes back, RESET in the command line starts over.
   class FakeHost
     IAC = 0xFF; DONT = 0xFE; DO = 0xFD; WONT = 0xFC; WILL = 0xFB
     SB = 0xFA; SE = 0xF0; EOR = 0xEF
@@ -80,7 +86,22 @@ module Tn3270
         @user = nil
         @last_aid = "(none)"
         @last_fields = {}
+        @edit_lines = SAMPLE_SOURCE.dup
+        @edit_top = 0
       end
+
+      SAMPLE_SOURCE = [
+        "//APPCIN   JOB (TEST),'FAKEHOST',CLASS=A,MSGCLASS=X",
+        "//*",
+        "//ASM      EXEC ASMACLG",
+        "//SYSIN    DD *",
+        "         YREGS",
+        "APPCIN   CSECT",
+        "APPCIN   AMODE 31",
+        "         BR    14",
+        "         END   APPCIN",
+        "/*"
+      ].freeze
 
       def run
         negotiate
@@ -219,7 +240,7 @@ module Tn3270
             bits = (opts[:hidden] ? HIDDEN : BRIGHT) | (opts[:numeric] ? NUMERIC : 0)
             out += field_start(bits, opts[:color] || :green)
             @inputs << [name, (row * @cols) + col + 1, len]
-            out += ebcdic(" " * len) if len.positive?
+            out += ebcdic(opts[:value].to_s.ljust(len)[0, len]) if len.positive?
             end_col = col + 1 + len
             r, c = end_col.divmod(@cols)
             out += [ORD_SBA, *addr_bytes(row + r, c)] + field_start(PROTECTED, nil) if row + r < @rows
@@ -269,6 +290,7 @@ module Tn3270
             text(6, 4, "2  Color chart   - field colors and intensities", color: :green),
             text(7, 4, "3  Wide screen   - ruler across the full width", color: :green),
             text(8, 4, "4  Slow host     - key tester that answers after 2 seconds", color: :green),
+            text(9, 4, "5  Editor        - ISPF-style edit screen (line numbers + data), for paste", color: :green),
             text(10, 4, "OPTION ===>", color: :white, bright: true),
             input(10, 16, 20, :option),
             text(@rows - 5, 0, ruler[0, @cols - 1], color: :yellow)
@@ -292,7 +314,64 @@ module Tn3270
             items << text(4 + i, 30, "#{c.to_s.ljust(10)} intensified", color: c, bright: true)
           end
           render items + msg + footer("PF3=Back"), cursor: [@rows - 1, 0]
+        when :edit
+          render edit_screen + msg + footer("ENTER=Keep  PF3=Save+back  PF7=Up  PF8=Down  Line cmds: I D"),
+                 cursor: [3, 14]
         end
+      end
+
+      EDIT_FIRST_ROW = 5
+
+      def edit_rows = @rows - 3 - EDIT_FIRST_ROW # leaves the message row and the footer
+      # Like ISPF: line number in columns 0-5, data from column 7 to the
+      # second last; the last column holds the next row's field attribute.
+      def edit_width = @cols - 8
+
+      def edit_screen
+        items = header("EDIT") + [
+          text(2, 0, "EDIT       FAKE.SOURCE(DEMO) - 01.00", color: :turquoise),
+          text(2, @cols - 22, format("Columns 00001 %05d", edit_width), color: :turquoise),
+          text(3, 0, "Command ===>", color: :green),
+          input(3, 13, [@cols - 36, 8].max, :command),
+          text(3, @cols - 16, "Scroll ===> CSR", color: :green),
+          text(4, 0, "****** #{'*' * 20} Top of Data #{'*' * 20}", color: :blue, bright: true)
+        ]
+        edit_rows.times do |i|
+          index = @edit_top + i
+          row = EDIT_FIRST_ROW + i
+          number = index < @edit_lines.size ? format("%06d", (index + 1) * 100) : ""
+          items << input(row, -1, 6, [:num, index], value: number, color: :turquoise) # attribute: end of the row above
+          items << input(row, 6, edit_width, [:data, index], value: @edit_lines[index].to_s)
+        end
+        items
+      end
+
+      # Enter on the editor: data changes, then line commands, bottom up.
+      def edit_input(aid, fields)
+        fields.each do |name, value|
+          next unless name.is_a?(Array) && name.first == :data
+
+          index = name.last
+          @edit_lines.fill("", @edit_lines.size...index) if index > @edit_lines.size
+          @edit_lines[index] = value
+        end
+        fields.select { |n, _| n.is_a?(Array) && n.first == :num }.sort_by { |n, _| -n.last }.each do |(_, index), cmd|
+          case cmd.delete("'").strip.upcase
+          when /\AD/ then @edit_lines.delete_at(index)
+          when /\AI/ then @edit_lines.insert(index + 1, "")
+          end
+        end
+        @edit_lines.pop while @edit_lines.last&.strip&.empty? && @edit_lines.size > 1
+        command = fields[:command].to_s.strip.upcase
+        @edit_lines = SAMPLE_SOURCE.dup if command == "RESET"
+        page = edit_rows
+        @edit_top = [@edit_top - page, 0].max if aid == "PF7"
+        @edit_top = [@edit_top + page, [@edit_lines.size - 1, 0].max].min if aid == "PF8"
+        if aid == "PF3"
+          @screen = :menu
+          return show("FAKE.SOURCE(DEMO) saved, #{@edit_lines.size} lines")
+        end
+        show(command == "RESET" ? "Back to the sample source" : nil)
       end
 
       # ---- input -------------------------------------------------------------
@@ -305,9 +384,10 @@ module Tn3270
             addr = decode_addr(rec[i + 1], rec[i + 2])
             j = i + 3
             j += 1 while j < rec.size && rec[j] != ORD_SBA
-            value = rec[i + 3...j].pack("C*").force_encoding("IBM037").encode("UTF-8").strip
+            value = rec[i + 3...j].pack("C*").force_encoding("IBM037").encode("UTF-8").delete("\0")
             name = @inputs.find { |_, start, _| start == addr }&.first
-            fields[name] = value if name
+            # Editor data keeps its leading blanks (they're columns); the rest is trimmed.
+            fields[name] = name.is_a?(Array) && name.first == :data ? value.rstrip : value.strip if name
             i = j
           else
             i += 1
@@ -338,7 +418,7 @@ module Tn3270
           elsif fields[:option].to_s.upcase == "LOGOFF"
             return false
           else
-            target = { "1" => :keys, "2" => :colors, "4" => :keys }[fields[:option]]
+            target = { "1" => :keys, "2" => :colors, "4" => :keys, "5" => :edit }[fields[:option]]
             @slow = fields[:option] == "4"
             if target
               @screen = target
@@ -346,9 +426,11 @@ module Tn3270
             elsif fields[:option] == "3"
               show("Ruler shows columns 1-#{@cols - 1}. Every 10th column is numbered.")
             else
-              show("Choose 1, 2, 3 or 4.")
+              show("Choose 1, 2, 3, 4 or 5.")
             end
           end
+        when :edit
+          edit_input(aid, fields)
         when :keys, :colors
           if aid == "PF3"
             @screen = :menu

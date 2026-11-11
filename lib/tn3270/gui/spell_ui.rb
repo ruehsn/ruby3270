@@ -2,6 +2,7 @@
 
 require_relative "spelling"
 require_relative "spell_checker"
+require_relative "spell_words"
 require_relative "win32"
 
 module Tn3270
@@ -13,6 +14,7 @@ module Tn3270
     module SpellUi
       SQUIGGLE = [0xFF, 0x4D, 0x4D].freeze
       MAX_SUGGESTIONS = 5
+      WORDS_CHECK_SECONDS = 2
 
       # The Spelling for the current settings, or nil (off, or no checker).
       # Made on first use, on the main thread (the checker is a COM object).
@@ -22,12 +24,49 @@ module Tn3270
         key = @config["spell_language"]
         unless @spelling_for == [key]
           @spelling_for = [key]
+          SpellWords.migrate(@config)
           checker = SpellChecker.open(key)
+          @words_stamp = SpellWords.stamp(@config)
+          @words_checked = monotonic_now
           @spelling = checker && Spelling.new(checker, min_field: @config["spell_min_field"].to_i,
-                                                       ignored: Array(@config["spell_ignore"]))
+                                                       ignored: SpellWords.load(@config))
         end
+        reload_spell_words if @spelling
         @spelling&.min_field = @config["spell_min_field"].to_i
         @spelling
+      end
+
+      # Picks up edits to the word list files (looked at every few seconds,
+      # since a shared one may be on a slow network drive).
+      def reload_spell_words(force: false)
+        now = monotonic_now
+        return unless force || now - @words_checked.to_f >= WORDS_CHECK_SECONDS
+
+        @words_checked = now
+        stamp = SpellWords.stamp(@config)
+        return if stamp == @words_stamp && !force
+
+        @words_stamp = stamp
+        @spelling.ignored = SpellWords.load(@config)
+      end
+
+      def monotonic_now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+      # View > Edit My Spelling Words...: your word list in a text editor.
+      # Saved changes show the next time the screen is checked.
+      def edit_spell_words
+        open_in_editor(SpellWords.ensure_personal(@config))
+      end
+
+      # A text file (word list, script) in a text editor (Notepad on Windows).
+      def open_in_editor(path)
+        cmd = if Config::WINDOWS then ["notepad.exe", path]
+              elsif Config::MAC then ["open", "-t", path]
+              else ["xdg-open", path]
+              end
+        Process.detach(Process.spawn(*cmd))
+      rescue SystemCallError => e
+        msg_box("Open File", "Couldn't open #{path}:\n#{e.message}")
       end
 
       def misspelled_words(scr)
@@ -122,8 +161,8 @@ module Tn3270
 
       def spell_ignore(text)
         spelling.ignore(text)
-        @config["spell_ignore"] = (Array(@config["spell_ignore"]) + [text.downcase]).uniq.sort
-        @config.save
+        SpellWords.add(@config, [text])
+        @words_stamp = SpellWords.stamp(@config) # our own change: no need to reload
       end
 
       # Screen point just under a word's first letter.

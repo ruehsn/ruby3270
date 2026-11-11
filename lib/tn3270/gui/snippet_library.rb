@@ -3,6 +3,7 @@
 require "yaml"
 require "fileutils"
 require_relative "config"
+require_relative "script_info"
 
 module Tn3270
   module Gui
@@ -16,10 +17,19 @@ module Tn3270
     #
     # New snippets go to whichever file you pick (your own by default).
     # Shared files you can't write to are read-only here.
+    #
+    # The folders in `script_folders` add their scripts (Ruby, PowerShell,
+    # batch...) to the list: the name and description come from each
+    # script's header comments (see ScriptInfo), and picking one runs it
+    # against the current session (see Controller#run_script).
     class SnippetLibrary
       PERSONAL = File.join(Dir.home, ".ruby3270-snippets.yml")
 
-      Item = Struct.new(:name, :text, :file)
+      # `script` is the script's path for an item from a script folder (its
+      # text is then the description); nil for a snippet.
+      Item = Struct.new(:name, :text, :file, :script) do
+        def script? = !script.nil?
+      end
 
       attr_reader :items, :errors
 
@@ -44,9 +54,24 @@ module Tn3270
         ([personal_file] + shared).uniq
       end
 
+      def script_folders = Array(@config["script_folders"]).map(&:to_s).reject(&:empty?)
+
+      # Every script in the script folders, by file name within each folder.
+      def script_files
+        script_folders.flat_map do |entry|
+          dir = File.expand_path(entry)
+          next [] unless File.directory?(dir)
+
+          Dir.children(dir).select { |n| ScriptInfo.script?(n) }.sort_by(&:downcase)
+             .map { |n| File.join(dir, n) }.select { |p| File.file?(p) }
+        rescue SystemCallError
+          []
+        end.uniq
+      end
+
       # Loads (again) when any file has changed since the last load.
       def reload_if_changed
-        stamps = files.map { |f| [f, File.exist?(f) ? File.mtime(f) : nil] }
+        stamps = (files + script_files).map { |f| [f, File.exist?(f) ? File.mtime(f) : nil] }
         return false if stamps == @stamps
 
         @stamps = stamps
@@ -56,7 +81,23 @@ module Tn3270
 
       def load_all
         @errors = []
-        @items = files.flat_map { |f| read(f) }
+        @items = files.flat_map { |f| read(f) } + script_files.map { |f| script_item(f) }
+      end
+
+      def script_item(path)
+        name, about = ScriptInfo.read(path)
+        Item.new(name, about, path, path)
+      end
+
+      # Adds a script folder to the config (saved by the caller).
+      def add_script_folder(path)
+        @config["script_folders"] = (script_folders + [path]).uniq
+        @stamps = nil
+      end
+
+      def remove_script_folder(path)
+        @config["script_folders"] = script_folders - [path]
+        @stamps = nil
       end
 
       # Items whose name or text contains every word of `query`, names that
@@ -72,6 +113,7 @@ module Tn3270
       end
 
       def writable?(file)
+        return false if ScriptInfo.script?(file) # a script, never written as a snippet file
         return File.writable?(file) if File.exist?(file)
 
         dir = File.dirname(file)
@@ -136,7 +178,7 @@ module Tn3270
       end
 
       def write(file)
-        entries = @items.select { |i| i.file == file }.map { |i| { "name" => i.name, "text" => i.text } }
+        entries = @items.select { |i| i.file == file && !i.script? }.map { |i| { "name" => i.name, "text" => i.text } }
         FileUtils.mkdir_p(File.dirname(file))
         File.write(file, entries.to_yaml)
         @stamps = nil

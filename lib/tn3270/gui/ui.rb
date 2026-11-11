@@ -73,10 +73,11 @@ module Tn3270
 
       def checked?(checkbox) = UI.checkbox_checked(checkbox) == 1
 
-      def spinbox(min, max, value)
+      def spinbox(min, max, value, &on_change)
         s = UI.new_spinbox(min, max)
         UI.spinbox_set_value(s, value)
-        s
+        UI.spinbox_on_changed(s) { on_change.call(UI.spinbox_value(s)); nil } if on_change
+        on_change ? keep(s) : s
       end
 
       def combobox(items, selected: 0, &on_select)

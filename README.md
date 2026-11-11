@@ -36,7 +36,14 @@ The 3270 protocol itself is handled by **s3270** (`ws3270.exe` on Windows) from 
     the window you have open, instead of a second program. Turn off with `single_instance: false`
 - The window title (and taskbar) shows the current tab's session name, never the host address. Two tabs on the same session are numbered: `PROD`, `PROD (2)`
 - Status bar pinned to the bottom of the window, with a status light: green = connected,
-  amber = connecting, grey = disconnected. Click it to disconnect, or to reconnect to the last host
+  amber = connecting, grey = disconnected. Click it to disconnect, or to reconnect to the last host.
+  Hover over it for the host address and port, session, response time and when the host last sent
+  anything. Next to it: the response time and the time the host was last heard from (`0.12s  heard 14:03:27`)
+- **Multi-line paste** (Ctrl+V): each line goes in at the column the paste started in, one row down, so code
+  pasted into ISPF EDIT lines up instead of landing in the line numbers. A line too long for its field is cut
+  at the field's end, and the paste stops at the bottom of the screen (the status bar says so). Where there's
+  no input field below (a form), the line goes in the next input field down. Pasting overwrites what's there:
+  in ISPF, make room first with a line command such as `I5`
 - F1-F12 = PF1-12, Shift+F1-F12 = PF13-24, Ctrl+F1-F3 = PA1-3, Right Ctrl = New line
   (full list under Help > Keyboard)
 - **Keyboard mapping** (Keys > Keyboard Mapping...): double-click an action and press any key combination,
@@ -48,7 +55,7 @@ The 3270 protocol itself is handled by **s3270** (`ws3270.exe` on Windows) from 
 - **Display font** (View > Font...): pick from the monospaced fonts installed on the PC, with a preview in
   the chosen font; the size always follows the window
 - **Connections** (Session > Connections...): saved hosts with port, TLS, LU name and screen size
-  (24x80, 32x80, 43x80, 27x132, 62x160 or custom), plus the path to the engine. **Duplicate** copies the
+  (24x80, 32x80, 43x80, 27x132, 62x160, or type any Rows and Columns), plus the path to the engine. **Duplicate** copies the
   connection on show as "Name (2)", "Name (3)"... for a variant of a session
 - **Edit Session** (Session > Edit Session...): the same dialog, open on the current tab's session, to change
   and save it. Connect reconnects the tab with the changes; a typed `host:port` session can be saved this way
@@ -75,10 +82,14 @@ The 3270 protocol itself is handled by **s3270** (`ws3270.exe` on Windows) from 
   get a red wavy underline. ALL-CAPS words are checked too. Right-click one for suggestions, Ignore, or
   Add to the Windows dictionary; Ctrl+; jumps to the next one. Codes like SYS1.PROCLIB or IEF142I and
   hidden fields are skipped. View > Spell Check turns it off; View > Spell Check Language picks the
-  language. Uses the spell checker built into Windows, so there's nothing to install
+  language. Uses the spell checker built into Windows, so there's nothing to install. Common mainframe
+  terms (JCL, MSGCLASS, SYSOUT, IDCAMS, CICS...) are never flagged. Ignored words go in your own text file,
+  `~/.ruby3270-spelling.txt` (View > Edit My Spelling Words opens it), and a team can add its own word list:
+  see [Spelling word lists](#spelling-word-lists)
 - **Find** (Ctrl+F or Edit > Find...): highlights matches on the screen as you type; Next / Previous move
   the cursor to them. "Search Screen History" lists matching lines in saved screens
-- **Response time**: how long the host took to answer the last Enter/PF/PA key, in the status bar
+- **Response time**: how long the host took to answer the last Enter/PF/PA key, in the status bar,
+  followed by the time the host last sent data
 - **Crosshair** (Ctrl+Shift+X or View > Crosshair): faint bands along the cursor's row and column
 - **Numeric fields** accept only 0-9 . - (Keys > Numeric Fields: Digits Only)
 - **CAPS button** in the status bar (or Edit > Caps Lock): types letters in upper case in this app only.
@@ -90,6 +101,9 @@ The 3270 protocol itself is handled by **s3270** (`ws3270.exe` on Windows) from 
 - **Tooltips**: rest the pointer on the connection light or the SNIP, ENTER, FK or CAPS buttons to see what they do
 - **Snippets** (SNIP button, View > Snippets Sidebar, or Ctrl+Space): text and key sequences you type with a
   double-click, a hotkey or a few letters. See [Snippets](#snippets)
+- **Script folders** (Snippets sidebar > Files > Add Script Folder...): the scripts in a folder (.rb, .ps1,
+  .bat, .py...) show in the snippet list with the name and description from their top comments, and
+  double-clicking one runs it in the background on the session. See [Script folders](#script-folders)
 - **Quick picker finds settings too** (Ctrl+Space): type `caps`, `auto enter`, `underline`, `key bar`...
   and Enter switches that option on or off, just like its menu item
 - **Export / Import Settings** (Session menu): your sessions, snippets and options in one file, to move to
@@ -104,7 +118,9 @@ The 3270 protocol itself is handled by **s3270** (`ws3270.exe` on Windows) from 
 - **Window shape follows the screen** (Windows, View > Lock Window Shape to the Screen, on by default):
   dragging an edge keeps the window the shape of the mainframe screen, so the text fills it with no empty
   band. The window also reshapes when the screen size changes (another host, or the key bar shown)
-- Status line with host, keyboard lock (X SYSTEM), insert mode and cursor position
+- Status line with keyboard lock (X SYSTEM), insert mode and cursor position (`05/12`; it has as many
+  digits as the screen size needs, and hovering over it shows the size, e.g. 24 x 80)
+- Menu items show their keyboard shortcut on the right (`Copy    Ctrl+C`), and follow Keys > Keyboard Mapping
 - Ruby API (`Tn3270::Session`) the window is built on, usable from your own scripts
 
 ## Requirements
@@ -148,7 +164,10 @@ ruby bin/tn3270 127.0.0.1:3270  # terminal 2: the emulator
 If ruby3270 is already running, the session opens as a tab in it and the new launch exits.
 
 Sign on with any user ID. Option 1 is a key tester that shows which PF/PA key the
-host received, option 2 is a color chart, and option 3 shows a ruler across all 160 columns.
+host received, option 2 is a color chart, option 3 shows a ruler across all 160 columns, option 4 is a
+key tester that answers slowly (for type-ahead), and option 5 is an **ISPF-style editor**: line numbers in
+columns 1-6 and 72 columns of data, line commands `I` (insert) and `D` (delete), PF7/PF8 to scroll, PF3 to
+save. It's there to try multi-line paste and editor-style screens without a mainframe.
 
 ## Scripting
 
@@ -228,6 +247,36 @@ Each file is a plain YAML list, easy to edit by hand or keep in git:
 [examples/snippets.yml](examples/snippets.yml) has examples for ISPF, TSO, SDSF and JCL, plus a few for
 the fake host.
 
+### Script folders
+
+For anything a snippet can't do (loops, decisions, reading files), keep scripts in a folder and add it
+under **Files > Add Script Folder** (setting `script_folders`). Each script in it (`.rb`, `.ps1`, `.bat`,
+`.cmd`, `.py`, `.vbs`, `.js`) shows in the sidebar and the quick pick next to your snippets, and
+picking one runs it on the current session, in the background, exactly like a
+[startup script](#startup-scripts): the same environment variables, `status` lines in the status bar,
+and it stops when the tab disconnects or closes. Edit opens the file in Notepad. Scripts are found
+again when the folder changes.
+
+The comments at the top of the script give the name and description:
+
+```ruby
+# Name: Release held jobs
+# Releases every held job for your user ID in SDSF.
+# Takes about 10 seconds; asks nothing.
+
+wait_for_text("READY")
+...
+```
+
+- `Name:` is optional; without it the file name is used (`release_held_jobs.rb` becomes "Release held jobs")
+- the other comment lines are the description: the first one shows under the name in the list, all of
+  them when you rest the pointer on it, and the quick pick searches them
+- comments are `#` (Ruby, PowerShell, Python), `REM` or `::` (batch), `'` (VBScript) or `//` (JScript).
+  A `#!` line, `# frozen_string_literal`, `# encoding` or `@echo off` before them is skipped
+
+A script folder opens the script port by itself (even with Session > Allow Scripts to Attach off), from
+the next connect.
+
 ## Startup scripts
 
 A connection can run a script each time it comes up: pick it under Session > Connections > Startup
@@ -280,6 +329,8 @@ history_size: 250         # screens kept in the screen history
 desktop_shortcuts: true   # Save in Connections also makes a desktop shortcut
 snippet_files:            # shared snippet files or folders (yours: ~/.ruby3270-snippets.yml)
 - '\\server\team\3270-snippets.yml'
+script_folders:           # folders of scripts listed with the snippets (see Script folders)
+- 'C:\mainframe\scripts'
 lock_ratio: true          # keep the window the shape of the screen while resizing
 single_instance: true     # launching again opens a tab in the running copy
 keys:                     # overrides of the default key bindings ("" unbinds)
@@ -316,6 +367,26 @@ own `welcome.yml` (it's in `.gitignore`), so an update won't replace yours even 
 
 The menus write all of these for you; you rarely need to edit the file. A plain `ruby bin/tn3270 host:port`
 uses `rows`/`cols` (default 62 x 160).
+
+### Spelling word lists
+
+Words spell check never flags come from these plain text files:
+
+1. `lib/tn3270/gui/mainframe_words.txt`: comes with the program (JCL keywords, utilities, products) and is
+   refreshed by updates. Don't edit it; use one of the files below
+2. your own list, `~/.ruby3270-spelling.txt`: right-click > Ignore adds to it, and View > Edit My Spelling
+   Words opens it in Notepad. To share it, send the file, or put it on a shared drive and list it in
+   `spell_word_files`. `personal_spelling` (default `nil`) keeps it somewhere else
+3. `spelling.txt` in `C:\ProgramData\ruby3270\` or the program folder: your company's terms, shipped with
+   your installs. Like `welcome.yml`, the program never ships one, so updates leave it alone
+4. any files in `spell_word_files` (default `[]`), e.g. `['\\server\team\spelling.txt']`, which a
+   `welcome.yml` can set for everyone
+
+One or more words per line, any case; lines starting with `#` are comments. A saved change to any of
+the files takes effect within a couple of seconds, with no restart. Nothing in them is copied into
+anyone's settings, so editing a shared file reaches everyone. Export Settings includes your own words,
+and Import Settings adds them to the importer's file. Older versions kept ignored words in the
+settings (`spell_ignore`); they move to your file the first time spell check runs.
 
 ## Tests
 

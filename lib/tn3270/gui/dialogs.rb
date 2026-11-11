@@ -71,8 +71,8 @@ module Tn3270
         @verify = Ui.form_row(form, "", Ui.checkbox("Verify the host's certificate (leave off for self-signed certificates)"))
         @lu = Ui.form_row(form, "LU name (optional)", Ui.entry)
         @size = Ui.form_row(form, "Screen size", Ui.combobox(SIZE_LABELS) { |i| size_picked(i) })
-        @rows = Ui.form_row(form, "Rows", Ui.spinbox(24, 255, 24))
-        @cols = Ui.form_row(form, "Columns", Ui.spinbox(80, 255, 80))
+        @rows = Ui.form_row(form, "Rows", Ui.spinbox(24, 255, 24) { size_typed })
+        @cols = Ui.form_row(form, "Columns", Ui.spinbox(80, 255, 80) { size_typed })
         script_row = Ui.hbox
         @script = Ui.add(script_row, Ui.entry, stretchy: true)
         Ui.add(script_row, Ui.button("Browse...") { browse_script })
@@ -204,15 +204,22 @@ module Tn3270
         UI.label_set_text(@error, "")
       end
 
+      # A size from the list fills in Rows and Columns; "Custom" leaves them
+      # for you to type.
       def size_picked(index)
-        custom = index == SIZE_LABELS.size - 1
-        Ui.enable(@rows, custom)
-        Ui.enable(@cols, custom)
-        return if custom || index.negative?
+        return if index == SIZE_LABELS.size - 1 || index.negative?
 
         _, rows, cols = Config::SIZES[index]
         UI.spinbox_set_value(@rows, rows)
         UI.spinbox_set_value(@cols, cols)
+      end
+
+      # Rows or Columns typed: the list shows the matching size, or Custom.
+      def size_typed
+        rows = UI.spinbox_value(@rows)
+        cols = UI.spinbox_value(@cols)
+        idx = Config::SIZES.index { |_, r, k| r == rows && k == cols } || SIZE_LABELS.size - 1
+        UI.combobox_set_selected(@size, idx) unless UI.combobox_selected(@size) == idx
       end
 
       def read_form

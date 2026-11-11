@@ -1,0 +1,40 @@
+# Mainframe terms spell check never flags. Comes with ruby3270 and is
+# replaced by program updates: put your own words in spelling.txt instead
+# (see the README, "Spell check"). One or more words per line; # starts a comment.
+
+# Systems, subsystems and products
+zos mvs tso ispf pdf jes jesmsglg jesjcl jesysmsg cics ims dbms vtam racf acf topsecret rrsf
+smpe smp hcd rmf smf sdsf omvs uss zfs hfs wlm xcf sysplex parallel coupling cfrm
+vsam idcams idcams iebgener iebcopy iebcompr iebupdte iebdg iefbr ickdsf adrdssu dfdss dfsms
+dfsort syncsort icetool icegener sort merge
+db spufi qmf dsnutilb dsntiar dsntep dsnuproc bind rebind plan collection
+mq mqseries wmq ftp tcpip telnet tnserver sna appc luname lpar lpars hmc ipl nip
+cobol pli assembler asm hlasm rexx clist easytrieve fortran
+endevor changeman panvalet librarian xpediter abendaid fileaid strobe omegamon
+netview automation tivoli zowe zosmf zcx
+
+# JCL
+jcl jobcard jobname jobclass msgclass msglevel notify typrun scan prty region cond
+exec pgm parm proc procs proclib jcllib steplib joblib sysin sysout sysprint sysudump
+sysabend sysmdump syslib syslmod sysut systerm syslog sysdbout sysuid
+dsn dsname disp shr mod catlg uncatlg keep pass delete dsorg recfm lrecl blksize
+space trk trks cyl cyls avgrec unit vol volser volume volumes dcb ddname dummy
+dsntype pds pdse ps seq gdg gdgs gds dataset datasets dsnlevel hlq
+sms storclas mgmtclas dataclas tape cart expdt retpd label nl sl
+outlim outclass dest hold holdq destination writer sysaffinity
+restart setup stepname procstep
+
+# Assembler and programs
+csect dsect amode rmode yregs equ ds dc ltorg using drop balr bal basr bctr
+svc abend abends abended reentrant rent reus linkedit binder iewl iewbldgo
+loadlib loadlibs objlib copylib copybook copybooks maclib macros
+
+# Operations, files and data
+dasd volsers catalog catalogs uncatalog uncataloged recatalog ucat mcat
+ebcdic ascii packed zoned comp hex
+syslog oper operator console consoles mcs emcs
+abend dump dumps snap trace gtf
+batch online cobol jcl rexx
+spool spooled spooling outq printq
+userid userids logon logoff logmode applid
+pfkey pfkeys pakey enter clear attn sysreq

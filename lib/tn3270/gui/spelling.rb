@@ -41,6 +41,12 @@ module Tn3270
         @memo = nil
       end
 
+      # Replaces the whole ignore list (after a word list file changed).
+      def ignored=(words)
+        @ignored = words.to_set { |w| w.downcase }
+        @memo = nil
+      end
+
       # After words were added to the checker's dictionary.
       def forget
         @known.clear

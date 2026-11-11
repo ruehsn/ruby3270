@@ -134,13 +134,16 @@ module Tn3270
         UI.window_on_closing(@win) { 1 }
         box = Ui.vbox
         Ui.add(box, Ui.label("Snippets come from your own file and any shared files or folders listed here.\n" \
-                             "A folder means every .yml file in it. Files you can't write to are read-only."))
+                             "A folder means every .yml file in it. Files you can't write to are read-only.\n" \
+                             "A script folder lists its scripts (.rb, .ps1, .bat, .py...) too: picking one runs it on the session.\n" \
+                             "The comments at the top of a script give its name and description (see the README)."))
         @table = Ui::Table.new(["File", "Kind", "Snippets", "Changes"], rows)
         Ui.add(box, @table.control, stretchy: true)
         @status = Ui.add(box, Ui.label(@library.errors.join("\n")))
         row = Ui.add(box, Ui.hbox)
         Ui.add(row, Ui.button("Add File...") { add_path(Ui.open_file(@win)) })
         Ui.add(row, Ui.button("Add Folder...") { add_path(Ui.take_text(UI.open_folder(@win)).then { |p| p.empty? ? nil : p }) })
+        Ui.add(row, Ui.button("Add Script Folder...") { add_script_folder(Ui.take_text(UI.open_folder(@win))) })
         Ui.add(row, Ui.button("New Shared File...") { new_file })
         Ui.add(row, Ui.button("Remove") { remove })
         Ui.add(row, Ui.label(""), stretchy: true)
@@ -166,7 +169,26 @@ module Tn3270
                   else "read-only"
                   end
           [path, kind, count.to_s, state]
+        end + script_rows
+      end
+
+      def script_rows
+        scripts = @library.items.select(&:script?)
+        @library.script_folders.map do |entry|
+          dir = File.expand_path(entry)
+          @paths << dir
+          count = scripts.count { |i| File.dirname(i.script) == dir }
+          [dir, "script folder", count.to_s, File.directory?(dir) ? "scripts run on the session" : "missing"]
         end
+      end
+
+      def add_script_folder(path)
+        return if path.empty?
+
+        @library.add_script_folder(path.tr("\\", "/"))
+        refresh
+        UI.label_set_text(@status, "Scripts can run once the session reconnects (it opens the script port then).") \
+          if @library.script_folders.size == 1
       end
 
       def refresh
@@ -197,7 +219,12 @@ module Tn3270
         return UI.label_set_text(@status, "Pick a shared file or folder to remove.") unless index
         return UI.label_set_text(@status, "Your own snippet file can't be removed.") if index.zero?
 
-        @library.remove_shared(@library.shared_entries[index - 1])
+        shared = @library.shared_entries
+        if index <= shared.size
+          @library.remove_shared(shared[index - 1])
+        else
+          @library.remove_script_folder(@library.script_folders[index - 1 - shared.size])
+        end
         refresh
       end
     end
