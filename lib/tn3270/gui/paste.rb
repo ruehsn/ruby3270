@@ -15,8 +15,9 @@ module Tn3270
     # instead. Each line is cut at the end of its field, so it never spills
     # into the next field, and nothing wraps past the bottom of the screen.
     module Paste
-      # Returns [steps, note]: steps are [:move, row, col] and [:type, text];
-      # note is a status-bar message when lines were cut or left out.
+      # Returns [steps, note, done]: steps are [:move, row, col] and
+      # [:type, text]; note is a status-bar message when lines were cut or
+      # left out; done is how many of the lines found room.
       def self.plan(screen, row, col, lines)
         steps = []
         cut = 0
@@ -39,7 +40,7 @@ module Tn3270
           steps << [:type, line] unless line.empty?
           done += 1
         end
-        [steps, note(lines.size, done, cut)]
+        [steps, note(lines.size, done, cut), done]
       end
 
       # Where the line after the one on `row` goes: same column on the next

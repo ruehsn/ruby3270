@@ -23,6 +23,9 @@ module Tn3270
       right: "Right", insert: "ToggleInsert", attn: "Attn", sysreq: "SysReq"
     }.freeze
 
+    # Keys the host answers (they send the screen to it).
+    AID = /\A(pf\d+|pa\d|enter|clear|attn|sysreq)\z/
+
     attr_reader :engine
 
     def self.open(host = nil, **opts)
@@ -94,8 +97,11 @@ module Tn3270
       Screen.from_buffer(lines, @engine.last_status)
     end
 
-    def text = screen.text
-    def include?(needle) = screen.include?(needle)
+    # The screen as text, one line per row, hidden fields blanked. Asked of
+    # the engine as plain text: much cheaper than building a Screen, which
+    # matters to the waits below (they look several times a second).
+    def text = @engine.run("Ascii()").join("\n")
+    def include?(needle) = text.include?(needle)
     def fields = screen.fields
     def input_fields = screen.input_fields
     def field_at(row, col) = screen.field_at(row, col)
@@ -107,6 +113,8 @@ module Tn3270
 
     # ---- typing --------------------------------------------------------------
 
+    # Types text at the cursor. A line break in it presses Newline: the rest
+    # goes in the next line's input field.
     def type(text) = tap { @engine.run("String(#{Engine.quote(text)})") }
 
     def move_to(row, col) = tap { @engine.run("MoveCursor(#{row},#{col})") }
@@ -137,7 +145,7 @@ module Tn3270
                else ACTIONS.fetch(name.to_sym) { raise ArgumentError, "unknown key #{key.inspect}" }
                end
       @engine.run(action)
-      wait_for_host if wait && aid?(name)
+      wait_for_host if wait && name.match?(AID)
       self
     end
 
@@ -163,13 +171,7 @@ module Tn3270
     end
 
     def wait_for_text(needle, timeout: @timeout)
-      deadline = Time.now + timeout
-      loop do
-        return self if needle.is_a?(Regexp) ? text.match?(needle) : include?(needle)
-        raise TimeoutError, "timed out waiting for #{needle.inspect}" if Time.now > deadline
-
-        sleep 0.1
-      end
+      poll(timeout, needle.inspect) { on_screen?(needle) }
     end
 
     # Run any s3270 action directly, e.g. raw("PrintText(file,screen.txt)").
@@ -196,10 +198,7 @@ module Tn3270
     # Waits until the text (or Regexp) is no longer on the screen, e.g. a
     # "PLEASE WAIT" message.
     def wait_for_text_gone(needle, timeout: @timeout)
-      wait_until(timeout: timeout, message: "#{needle.inspect} to go away") do |scr|
-        needle.is_a?(Regexp) ? !scr.text.match?(needle) : !scr.include?(needle)
-      end
-      self
+      poll(timeout, "#{needle.inspect} to go away") { !on_screen?(needle) }
     end
 
     # Waits until the screen is different from the one given (or from now).
@@ -208,18 +207,17 @@ module Tn3270
     #   s.wait_for_change(before)
     def wait_for_change(before = screen, timeout: @timeout)
       old = before.is_a?(Screen) ? before.text : before.to_s
-      wait_until(timeout: timeout, message: "the screen to change") { |scr| scr.text != old }
-      self
+      poll(timeout, "the screen to change") { text != old }
     end
 
     # Presses a key, then waits for the host: for `text` to appear when given,
     # otherwise for the screen to change. Returns the session.
     #   s.press_and_wait(:enter, "READY")
     #   s.press_and_wait(:pf8)               # next page
-    def press_and_wait(key, text = nil, timeout: @timeout)
-      before = screen
+    def press_and_wait(key, needle = nil, timeout: @timeout)
+      before = text
       press(key, wait: false)
-      text ? wait_for_text(text, timeout: timeout) : wait_for_change(before, timeout: timeout)
+      needle ? wait_for_text(needle, timeout: timeout) : wait_for_change(before, timeout: timeout)
     end
 
     # Types into the field after a label, presses Enter and waits for `text`
@@ -245,16 +243,16 @@ module Tn3270
     end
 
     # One screen row as text (0-based), trailing blanks removed.
-    def line(row) = screen.row_text(row).rstrip
+    def line(row) = @engine.run("Ascii()")[row].to_s.rstrip
 
     # Every row as an array of strings, trailing blanks removed.
-    def lines = screen.text.lines(chomp: true).map(&:rstrip)
+    def lines = @engine.run("Ascii()").map(&:rstrip)
 
     # Where text appears: [[row, col, length], ...]. Rows and columns are 0-based.
     def find(term, match_case: false) = screen.find(term, match_case: match_case)
 
     # Whether text (or a Regexp) is on the screen now.
-    def on_screen?(needle) = needle.is_a?(Regexp) ? text.match?(needle) : include?(needle)
+    def on_screen?(needle) = needle.is_a?(Regexp) ? text.match?(needle) : text.include?(needle)
 
     # The cursor position: [row, col], 0-based.
     def cursor
@@ -278,10 +276,10 @@ module Tn3270
       max_pages.times do
         return true if on_screen?(needle)
 
-        before = screen
+        before = text
         press(key, wait: false)
         wait_for_host(timeout: timeout)
-        return on_screen?(needle) if screen.text == before.text
+        return on_screen?(needle) if text == before
       end
       on_screen?(needle)
     end
@@ -307,6 +305,15 @@ module Tn3270
 
     private
 
-    def aid?(name) = name.match?(/\A(pf\d+|pa\d|enter|clear|attn|sysreq)\z/)
+    # Looks every 0.1 seconds until the block is true; TimeoutError after `timeout`.
+    def poll(timeout, what)
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+      until yield
+        raise TimeoutError, "timed out waiting for #{what}" if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+
+        sleep 0.1
+      end
+      self
+    end
   end
 end

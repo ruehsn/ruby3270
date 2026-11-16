@@ -73,11 +73,15 @@ module Tn3270
     #   script_port: also let other programs drive this engine over TCP on
     #                127.0.0.1:script_port (see Engine.attach). This engine
     #                then talks to it over that port too.
-    def initialize(exe: nil, rows: 62, cols: 160, model: nil, extra_args: [], script_port: nil)
+    #   attach:      [host, port] of an engine someone else started: connect
+    #                to it instead of starting one (see Engine.attach).
+    def initialize(exe: nil, rows: 62, cols: 160, model: nil, extra_args: [], script_port: nil, attach: nil)
+      @mutex = Mutex.new
+      return open_socket(*attach) if attach
+
       exe = self.class.default_exe if exe.nil? || exe.to_s.strip.empty?
       @rows = rows
       @cols = cols
-      @mutex = Mutex.new
       @script_port = script_port
       utf8 = DEFAULT_EXE.end_with?(".exe") ? ["-localcp", "65001"] : ["-utf8"]
       model ||= self.class.model_for(rows, cols)
@@ -134,9 +138,7 @@ module Tn3270
     # the ruby3270 window with "Allow Scripts to Attach" on. Closing this
     # engine only drops the connection; the session carries on.
     def self.attach(port: 3271, host: "127.0.0.1")
-      engine = allocate
-      engine.send(:open_socket, host, port)
-      engine
+      new(attach: [host, port])
     end
 
     # Whether something already has 127.0.0.1:port (or the port can't be
@@ -165,7 +167,11 @@ module Tn3270
     def attached? = @attached || false
 
     # Runs an action like "Enter" or "PF(3)" and returns its data lines.
+    # One action is one line: a line break in it would be read as a second
+    # action, and every answer after that would belong to the action before.
     def run(action)
+      raise ArgumentError, "an action can't contain a line break" if action.to_s.match?(/[\r\n]/)
+
       @mutex.synchronize do
         raise Error, "engine is not running" unless alive?
 
@@ -273,7 +279,6 @@ module Tn3270
 
     def open_socket(host, port, attached: true)
       require "socket"
-      @mutex ||= Mutex.new
       @attached = attached
       @socket = TCPSocket.new(host, port)
       @socket.set_encoding("UTF-8")
@@ -294,9 +299,11 @@ module Tn3270
 
     public
 
-    # Quote a string for an action argument: String("...").
+    # Quote a string for an action argument: String("..."). A line break
+    # becomes the Newline key (the next line's input field), as in a paste.
     def self.quote(text)
-      %("#{text.gsub('\\', '\\\\\\\\').gsub('"', '\\"')}")
+      quoted = text.to_s.gsub('\\', '\\\\\\\\').gsub('"', '\\"')
+      %("#{quoted.gsub(/\r\n|\r|\n/, '\\\\r')}")
     end
   end
 end

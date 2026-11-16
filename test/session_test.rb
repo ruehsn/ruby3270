@@ -88,6 +88,34 @@ class SessionTest < Minitest::Test
     assert_equal "5", ruler[150] # column 150 numbered as "5" (150 / 10 % 10)
   end
 
+  # A line break inside an action would be read as a second action, and
+  # every later answer would then belong to the action before it.
+  def test_an_action_with_a_line_break_is_refused
+    @s.wait_for_text("USER ID")
+    assert_raises(ArgumentError) { @s.raw("Query(Cursor1)\nQuery(Model)") }
+    assert_match(/\Arow \d+ column \d+/, @s.raw("Query(Cursor1)").join) # still in step
+  end
+
+  # Typed text with a line break goes on in the next line's field.
+  def test_typing_several_lines_moves_to_the_next_field
+    @s.wait_for_text("USER ID")
+    @s.fill("USER ID", "user01\nsecret")
+    assert_equal "user01", @s.value("USER ID")
+    assert_match(/\Arow \d+ column \d+/, @s.raw("Query(Cursor1)").join)
+    @s.enter
+    @s.wait_for_text("MAIN MENU") # ...so the password went in its field
+  end
+
+  def test_text_helpers_match_the_screen
+    @s.wait_for_text("USER ID")
+    @s.fill("PASSWORD", "secret")
+    assert_equal @s.screen.text, @s.text
+    refute_includes @s.text, "secret" # hidden fields stay blank
+    assert_equal @s.screen.row_text(0).rstrip, @s.line(0)
+    assert_equal @s.status.rows, @s.lines.size
+    assert @s.on_screen?(/USER\s+ID/)
+  end
+
   private
 
   def login

@@ -14,7 +14,7 @@ The 3270 protocol itself is handled by **s3270** (`ws3270.exe` on Windows) from 
 ## Features
 
 - Screen scales with the window: the font is measured and the largest size that fits is picked on every resize
-- Quick to start and to draw: about 75 files load at startup (antivirus scanners check each one), and a
+- Quick to start and to draw: about 90 files load at startup (antivirus scanners check each one), and a
   full 62 x 160 screen redraws in about 5 ms
 - VS Code style title bar (Windows): the menus sit inside the title bar, next to the icon, with the
   window buttons on the right (to use the normal Windows title bar instead, set `custom_title_bar: false`
@@ -28,6 +28,10 @@ The 3270 protocol itself is handled by **s3270** (`ws3270.exe` on Windows) from 
   - Right-click a tab for New Tab, Duplicate Tab, Rename Tab, Move Tab to New Window, Close Tab and Close
     Other Tabs (Duplicate and Rename are in the Session menu too). Double-click a tab to rename it right
     there: type, then Enter (Esc cancels; an empty name goes back to the session name)
+  - **Tab colors**: give a session a color (red for production, say) and its tabs carry it, with a line
+    of the same color along the top of the status bar while that tab is on show. Pick it under Tab color
+    in Session > Connections, or right-click a tab > Tab Color (Session > Tab Color does the same). A saved
+    session keeps its color; a session typed as `host:port` has it for that tab only
   - A **new tab** lists your saved sessions, most recently used first: click one, or press 1-9. At the top, **Duplicate** (or D)
     opens another connection to the session in the tab you opened it from
   - Opening a session (Connections, a desktop shortcut) uses the current tab if it isn't
@@ -38,12 +42,21 @@ The 3270 protocol itself is handled by **s3270** (`ws3270.exe` on Windows) from 
 - Status bar pinned to the bottom of the window, with a status light: green = connected,
   amber = connecting, grey = disconnected. Click it to disconnect, or to reconnect to the last host.
   Hover over it for the host address and port, session, response time and when the host last sent
-  anything. Next to it: the response time and the time the host was last heard from (`0.12s  heard 14:03:27`)
+  anything. Next to it: the response time and the time the host was last heard from (`0.12s  at 14:03:27`)
 - **Multi-line paste** (Ctrl+V): each line goes in at the column the paste started in, one row down, so code
   pasted into ISPF EDIT lines up instead of landing in the line numbers. A line too long for its field is cut
   at the field's end, and the paste stops at the bottom of the screen (the status bar says so). Where there's
   no input field below (a form), the line goes in the next input field down. Pasting overwrites what's there:
   in ISPF, make room first with a line command such as `I5`
+  - **Paste the Rest** (Ctrl+Shift+V or Edit > Paste the Rest): when a paste runs out of screen, the lines
+    that had no room are kept and the status bar shows how many (`PASTE +30`). Scroll on (PF8), click
+    where the next line goes, and Paste the Rest carries on from there, as many times as it takes
+- **A picture of the window, for audit** (Windows): Edit > Copy Window as Picture (Ctrl+Shift+C) puts the
+  whole window on the clipboard, title bar, tabs, screen, key bar and status bar, ready to paste into a
+  document, mail or chat; Edit > Save Window as PNG writes it to a file. In the picture the status bar
+  gives the full date and time with the offset from UTC, the session name, the host and port, and your
+  Windows user name (`Mon 2026-11-16 14:03:27 UTC-06:00   PROD   L:host:992   USER01`). The stamp is only in
+  the picture, never on the screen, and the window doesn't have to be in front or wholly on the screen
 - **Undo** (Ctrl+Z or Edit > Undo): takes back the last paste, snippet, spelling fix or run of typing
   (up to 20 steps), putting back the fields' text and the cursor. It works until you press Enter, a PF
   key or anything else the host answers, because the host's new screen replaces what was there.
@@ -81,7 +94,7 @@ The 3270 protocol itself is handled by **s3270** (`ws3270.exe` on Windows) from 
 - **Esc unlocks**: while the keyboard is locked (X SYSTEM, or X -f after typing where you can't), Esc is
   Reset: it unlocks at once, drops any queued keys, and if the cursor is somewhere you can't type it
   moves to the next input field. While a bad entry has the keyboard locked (X -f) the screen background
-  turns dark red. On an unlocked screen Esc is Clear. Ctrl+R is always Reset
+  turns dark red. On an unlocked screen Esc does nothing. Ctrl+R is always Reset
 - **Spell check** (Windows): misspelled words in long input fields (20+ characters, `spell_min_field`)
   get a red wavy underline. ALL-CAPS words are checked too. Right-click one for suggestions, Ignore, or
   Add to the Windows dictionary; Ctrl+; jumps to the next one. Codes like SYS1.PROCLIB or IEF142I and
@@ -350,6 +363,7 @@ connections:
   rows: 27
   cols: 132
   script: 'C:\scripts\logon.rb'   # startup script ("" = none)
+  color: red              # its tabs' color: red, orange, yellow, green, blue, purple ("" = none)
 ```
 
 **Moving settings to another PC or a colleague:** Session > Export Settings saves your sessions, your own

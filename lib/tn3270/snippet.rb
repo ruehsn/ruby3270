@@ -55,18 +55,33 @@ module Tn3270
     #   vars:    { clipboard: "...", user: "..." } (date and time are worked out)
     #   press:   how to press a key (default session.press, which waits for the host)
     #   after:   called after each step (the window uses it to redraw)
-    def run(session, text, answers: {}, vars: {}, wait_timeout: 30, press: nil, after: nil)
+    #   newline: for a line break, given the [row, col] the line started at
+    #            (default: press NewLine, the next input field)
+    def run(session, text, answers: {}, vars: {}, wait_timeout: 30, press: nil, after: nil, newline: nil)
       press ||= ->(key) { session.press(key) }
+      origin = nil # where the current line started: a break lines up under it
       expand(parse(text), answers, vars).each do |kind, value|
         case kind
-        when :text then session.type(value) unless value.empty?
-        when :key then press.call(value)
-        when :wait then session.wait_for_text(value, timeout: wait_timeout)
+        when :text
+          origin ||= cursor_of(session) if newline
+          session.type(value) unless value.empty?
+        when :key
+          if value == :newline && newline && origin
+            newline.call(origin)
+          else
+            press.call(value)
+          end
+          origin = nil
+        when :wait
+          session.wait_for_text(value, timeout: wait_timeout)
+          origin = nil
         end
         after&.call
       end
       session
     end
+
+    def cursor_of(session) = session.cursor
 
     # Replaces {ask:...} and {date}-style placeholders with text to type.
     # A value with line breaks moves on to the next fields, like a paste.

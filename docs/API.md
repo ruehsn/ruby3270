@@ -110,7 +110,7 @@ Options for `open` / `new`:
 | --- | --- |
 | `fill(where, text)` | Moves to a field, clears it, types `text`. `where` is a label on the screen (`"USER ID"`), a `[row, col]` pair, or a `Field`. Add `clear: false` to keep what's there. |
 | `fill_form("USER ID" => "USER01", "PASSWORD" => pw)` | Several `fill`s at once. |
-| `type(text)` | Types at the cursor. |
+| `type(text)` | Types at the cursor. A line break in the text presses New Line: the rest goes in the next line's input field. |
 | `move_to(row, col)` | Moves the cursor. |
 | `enter`, `pf(n)`, `pa(n)` | Sends Enter, PF1-24, PA1-3 and waits for the keyboard to unlock. |
 | `press(key)` | Any key: `:enter :clear :pf13 :pa1 :tab :backtab :home :newline :reset :erase_eof :erase_input :backspace :delete :up :down :left :right :insert :attn :sysreq`. |

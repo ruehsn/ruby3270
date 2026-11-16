@@ -4,6 +4,9 @@ require_relative "../session"
 require_relative "config"
 require_relative "startup_script"
 require_relative "paste"
+require_relative "controller_undo"
+require_relative "controller_scripts"
+require "zlib"
 require_relative "../snippet"
 
 module Tn3270
@@ -25,9 +28,13 @@ module Tn3270
     # Response time: how long the host took to answer the last AID key.
     #
     # Startup script: a connection's "script" runs once each time it comes
-    # up (see StartupScript).
+    # up (see ControllerScripts). Undo is in ControllerUndo.
     class Controller
-      AID = /\A(pf\d+|pa\d|enter|clear|attn|sysreq)\z/
+      include ControllerUndo
+      include ControllerScripts
+
+      AID = Session::AID
+      BACKGROUND_POLL = 0.5 # seconds between looks at a tab that isn't on show
       CONNECT_TIMEOUT = 20
       TYPEAHEAD_MAX = 500
       FAST_POLL = 0.03 # seconds, while waiting for the host or holding type-ahead
@@ -38,14 +45,14 @@ module Tn3270
       # unlocked keyboard; the others (connect, reset...) run right away.
       Job = Struct.new(:block, :input)
 
-      # What Ctrl+Z puts back: the input fields' text (or, on an unformatted
-      # screen, each row) and the cursor, from before a paste or some typing.
-      UndoPoint = Struct.new(:fields, :rows, :cursor, :records, :what)
-      UNDO_LIMIT = 20
       # Keys that change a field's text: they join the typing that undo takes back.
       EDIT_KEYS = %i[backspace delete erase_eof erase_input].freeze
 
-      HistoryEntry = Struct.new(:lines, :status, :time) do
+      # An earlier screen. The buffer text is kept deflated (about a tenth
+      # of its size) and only unpacked and parsed when the screen is shown.
+      HistoryEntry = Struct.new(:packed, :status, :time) do
+        def self.pack(lines, status, time) = new(Zlib::Deflate.deflate(lines.join("\n")).freeze, status, time)
+        def lines = Zlib::Inflate.inflate(packed).force_encoding("UTF-8").split("\n", -1)
         def screen = Screen.from_buffer(lines, status)
       end
 
@@ -55,8 +62,18 @@ module Tn3270
       # Keystrokes waiting for the keyboard to unlock.
       def typeahead_count = @typeahead.size
 
+      # A tab that isn't the one on show is looked at less often. Coming back
+      # on show, it is looked at straight away.
+      def background=(on)
+        was = @background
+        @background = on ? true : false
+        enqueue {} if was && !@background
+      end
+
       def initialize(config, on_change:)
         @config = config
+        @background = false
+        @paste_rest = nil # lines of a paste that had no room (see paste_rest)
         @on_change = on_change
         @queue = Queue.new
         @snapshot = nil
@@ -140,6 +157,7 @@ module Tn3270
           @script_conn = nil
           stop_startup_script
           forget_undo
+          @paste_rest = nil
           @typeahead.clear
           @aid_sent_at = nil
           @session.disconnect
@@ -154,17 +172,6 @@ module Tn3270
           @session.move_to(row, col)
         end
       end
-
-      # Ctrl+Z: takes back the last paste, snippet, spelling fix or run of
-      # typing, until the host sends a new screen (Enter, PF... clear the list).
-      def undo
-        enqueue(input: true) do
-          undo_now
-          notify
-        end
-      end
-
-      def can_undo? = @undo.any?
 
       # Shows a message in the status bar (until the next one).
       def flash(text)
@@ -201,13 +208,17 @@ module Tn3270
       end
 
       # Keys that must get through a locked keyboard rather than wait.
-      # :escape is Reset while the keyboard is locked, otherwise Clear (see press).
+      # :escape is Reset while the keyboard is locked, otherwise nothing (see press).
       IMMEDIATE = %i[reset attn sysreq escape].freeze
 
       def press(key)
         enqueue(input: !IMMEDIATE.include?(key)) do
           was_locked = locked?
-          key = was_locked ? :reset : :clear if key == :escape
+          if key == :escape
+            next unless was_locked # Esc does nothing unless the keyboard is locked
+
+            key = :reset
+          end
           @insert_mode = !@insert_mode if key == :insert
           reset_keyboard if key == :reset
           if EDIT_KEYS.include?(key)
@@ -295,14 +306,24 @@ module Tn3270
 
       # Pastes text at the cursor. Several lines line up under the cursor's
       # column, one row down each (see Paste).
+      # Lines that find no room below (the bottom of the screen) are kept:
+      # scroll, put the cursor where they go, and paste_rest carries on.
       def paste(text)
+        enqueue(input: true) { paste_lines(text.delete("\r").split("\n")) }
+      end
+
+      # Edit > Paste the Rest: the lines the last paste had no room for, at
+      # the cursor. It can be used again and again until they have all gone in.
+      def paste_rest
         enqueue(input: true) do
-          screen = undo_point("paste")
-          steps, note = Paste.plan(screen, screen.cursor_row, screen.cursor_col, text.delete("\r").split("\n"))
-          steps.each { |op, *args| op == :move ? @session.move_to(*args) : @session.type(*args) }
-          @message = note if note
+          next @message = "Nothing left to paste" unless @paste_rest
+
+          paste_lines(@paste_rest)
         end
       end
+
+      # How many lines of the last paste are still waiting for paste_rest.
+      def paste_rest_count = @paste_rest&.size.to_i
 
       # Types a snippet (see Tn3270::Snippet): it waits its turn like typed
       # keys, keys in it go into the screen history like keys you press, and
@@ -312,10 +333,18 @@ module Tn3270
           undo_point(name ? "snippet \"#{name}\"" : "snippet")
           Snippet.run(@session, text, answers: answers, vars: vars,
                                       wait_timeout: @config["snippet_wait_seconds"].to_f,
-                                      press: ->(key) { snippet_key(key) }, after: -> { refresh })
+                                      press: ->(key) { snippet_key(key) }, after: -> { refresh },
+                                      newline: ->(origin) { snippet_line_break(origin) })
         rescue Error => e
           raise Error, "Snippet #{name ? "\"#{name}\" " : ''}stopped: #{reason(e)}"
         end
+      end
+
+      # A line break inside a snippet lines up under the column the line began
+      # in, like a pasted line (see Paste); with no such place, the next field.
+      def snippet_line_break(origin)
+        target = Paste.target_for(@session.screen, origin[0], origin[1])
+        target ? @session.move_to(*target) : snippet_key(:newline)
       end
 
       def screen_text = @snapshot&.text.to_s
@@ -332,7 +361,29 @@ module Tn3270
         nil
       end
 
+      # Locked because of something typed where it can't go (a protected spot,
+      # a letter in a numeric field): "X -f" on a real terminal. The engine
+      # reports it as an ordinary lock, so it's recognised by its error message
+      # and remembered until the keyboard unlocks.
+      def operator_error?
+        return false unless @operator_error
+
+        st = @session.engine.last_status
+        @operator_error = false unless st&.connected? && st.keyboard_locked?
+        @operator_error
+      end
+
       private
+
+      # On the worker thread: types the lines and keeps the ones left over.
+      def paste_lines(lines)
+        screen = undo_point("paste")
+        steps, note, done = Paste.plan(screen, screen.cursor_row, screen.cursor_col, lines)
+        steps.each { |op, *args| op == :move ? @session.move_to(*args) : @session.type(*args) }
+        @paste_rest = done < lines.size ? lines[done..] : nil
+        note = "#{note}. Scroll, click where the next line goes, then Edit > Paste the Rest" if @paste_rest
+        @message = note if note
+      end
 
       # Engines start one at a time (every tab has its own): each takes the
       # first free attach port, and two starting together could pick the same.
@@ -394,87 +445,12 @@ module Tn3270
         return unless connected? && @raw
 
         lines, status = @raw
-        return if @history.last&.lines == lines
+        return if @remembered.equal?(lines) || @remembered == lines
 
+        @remembered = lines
         # Replace the array rather than mutate it; the UI thread reads it.
-        entry = HistoryEntry.new(lines, status, Time.now)
+        entry = HistoryEntry.pack(lines, status, Time.now)
         @history = (@history + [entry]).last(@config["history_size"].to_i.clamp(1, 5000))
-      end
-
-      # ---- undo (on the worker thread) ----------------------------------------------
-
-      # Saves what the screen's input looks like now, so Ctrl+Z can put it
-      # back. Returns the screen it read.
-      def undo_point(what)
-        @typing = false
-        screen = @session.screen
-        fields = screen.input_fields.map { |f| [f.row, f.col, f.length, f.value.to_s] } unless screen.fields.empty?
-        rows = (0...screen.rows).map { |r| screen.row_text(r) } if screen.fields.empty?
-        point = UndoPoint.new(fields, rows, [screen.cursor_row, screen.cursor_col], records_received, what)
-        @undo = (@undo + [point]).last(UNDO_LIMIT)
-        screen
-      end
-
-      # Typed characters and editing keys up to the next other action form
-      # one undo step.
-      def typing
-        undo_point("typing") unless @typing
-        @typing = true
-        yield
-      end
-
-      def forget_undo
-        @undo = []
-        @typing = false
-      end
-
-      def undo_now
-        @typing = false
-        point = @undo.pop
-        return @message = "Nothing to undo" unless point
-        if point.records != records_received
-          forget_undo
-          return @message = "Can't undo: the host has changed the screen since"
-        end
-
-        screen = @session.screen
-        return unless (restored = point.fields ? restore_fields(point, screen) : restore_rows(point, screen))
-
-        @session.move_to(*point.cursor)
-        @message = restored.zero? ? "Undid #{point.what} (nothing had changed)" : "Undid #{point.what}"
-      end
-
-      # Puts back each input field whose text differs; returns how many.
-      def restore_fields(point, screen)
-        now = screen.input_fields.to_h { |f| [[f.row, f.col, f.length], f.value.to_s] }
-        unless point.fields.all? { |r, c, len, _| now.key?([r, c, len]) }
-          forget_undo
-          @message = "Can't undo: the screen's fields have changed"
-          return nil
-        end
-
-        changed = point.fields.reject { |r, c, len, value| now[[r, c, len]] == value }
-        changed.each do |r, c, _len, value|
-          @session.move_to(r, c)
-          @session.press(:erase_eof, wait: false)
-          @session.type(value) unless value.empty?
-        end
-        changed.size
-      end
-
-      # An unformatted screen has no fields: rows that differ are typed over
-      # (in overtype mode, so nothing shifts).
-      def restore_rows(point, screen)
-        changed = point.rows.each_index.reject { |r| screen.row_text(r) == point.rows[r] }
-        return 0 if changed.empty?
-
-        @session.press(:insert, wait: false) if @insert_mode
-        changed.each do |r|
-          @session.move_to(r, 0)
-          @session.type(point.rows[r])
-        end
-        @session.press(:insert, wait: false) if @insert_mode
-        changed.size
       end
 
       def enqueue(input: false, &block)
@@ -517,19 +493,6 @@ module Tn3270
         st&.connected? && (st.error? || operator_error?)
       end
 
-      # Locked because of something typed where it can't go (a protected spot,
-      # a letter in a numeric field): "X -f" on a real terminal. The engine
-      # reports it as an ordinary lock, so it's recognised by its error message
-      # and remembered until the keyboard unlocks.
-      def operator_error?
-        return false unless @operator_error
-
-        st = @session.engine.last_status
-        @operator_error = false unless st&.connected? && st.keyboard_locked?
-        @operator_error
-      end
-      public :operator_error? # the status bar shows it
-
       # ---- worker thread -------------------------------------------------------
 
       def work
@@ -537,7 +500,8 @@ module Tn3270
         start_engine
         loop do
           waiting = @aid_sent_at || @typeahead.any?
-          job = pop(waiting ? FAST_POLL : poll_every)
+          idle = @background && !@auto_enter ? [poll_every, BACKGROUND_POLL].max : poll_every
+          job = pop(waiting ? FAST_POLL : idle)
           break if job == :stop
           next unless @session || start_engine # couldn't start: jobs wait for one that can
 
@@ -548,11 +512,20 @@ module Tn3270
           end
           break if job == :stop
 
-          refresh
-          run_startup_script
-          flush_typeahead
-          auto_enter_tick
+          tick
         end
+      end
+
+      # What every poll does. Nothing that goes wrong here may end the worker:
+      # the tab would stop taking keys for good.
+      def tick
+        refresh
+        run_startup_script
+        flush_typeahead
+        auto_enter_tick
+      rescue StandardError => e
+        @message = "#{e.class}: #{e.message}"
+        notify
       end
 
       # Starts the engine (tried again every few seconds if it fails, e.g. no
@@ -594,81 +567,6 @@ module Tn3270
         run_safely { send_key(:enter) }
         @message = "AUTO ENTER every #{auto_enter_seconds.round(1)}s - click ENTER again to stop" if @auto_enter && @message.nil?
       end
-
-      # Starts the startup script once the connection is up, in its own
-      # process: the window stays usable while it works. Each line it prints,
-      # or its error, shows in the status bar.
-      def run_startup_script
-        return unless @script_conn && connected?
-
-        conn = @script_conn
-        @script_conn = nil
-        path = StartupScript.path_for(conn)
-        unless @attach_port
-          @message = "Startup script not run: no free script port from #{@config['script_port']}"
-          return notify
-        end
-        running = @message = "Running startup script #{File.basename(path)}..."
-        notify
-        on_status = lambda do |text|
-          @message = text
-          notify
-        end
-        on_exit = lambda do |error|
-          @message = error || (@message == running ? nil : @message) # a quiet script leaves no message
-          notify
-        end
-        @startup_script = StartupScript.start(path, conn, @attach_port, on_status: on_status, on_exit: on_exit)
-      end
-
-      def stop_startup_script
-        StartupScript.stop(@startup_script)
-        @startup_script = nil
-        (@scripts || []).each { |s| StartupScript.stop(s) } # ones run from the snippet list
-        @scripts = []
-      end
-
-      public
-
-      # Runs a script from a script folder against this session, in the
-      # background, like a startup script: what it prints shows in the
-      # status bar, and it ends when the tab disconnects, reconnects or closes.
-      def run_script(path, name)
-        enqueue do
-          if !connected?
-            @message = "Connect first, then run \"#{name}\""
-          elsif !@attach_port
-            @message = "\"#{name}\" not run: the session has no script port yet. Reconnect to open one"
-          else
-            start_script(path, name)
-          end
-          notify
-        end
-      end
-
-      private
-
-      def start_script(path, name)
-        running = @message = "Running #{name}..."
-        on_status = lambda do |text|
-          @message = text
-          notify
-        end
-        on_exit = lambda do |error|
-          @message = error ? error.sub(StartupScript::FAILED, "#{name} failed").sub("Startup script", name) : (@message == running ? nil : @message)
-          notify
-        end
-        @scripts = (@scripts || []).select(&:alive?)
-        run = StartupScript.start(path, @last_target || {}, @attach_port, on_status: on_status, on_exit: on_exit)
-        @scripts << run if run
-      end
-
-      public
-
-      # True while this tab's startup script is still running.
-      def startup_script_running? = @startup_script&.alive? || false
-
-      private
 
       def handle(job)
         if job.input && @config["typeahead"] && (@typeahead.any? || host_busy?)
@@ -713,6 +611,11 @@ module Tn3270
         @message = @gave_up || explain(reason(e))
         @gave_up = nil
         revive_engine
+        notify
+      rescue StandardError => e
+        # A bug rather than the engine saying no. It must not end the worker
+        # (the tab would stop taking keys): say what it was and carry on.
+        @message = "#{e.class}: #{e.message}"
         notify
       end
 

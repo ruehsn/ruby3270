@@ -9,6 +9,8 @@ require "tn3270"
 require "tn3270/gui/tab"
 require "tn3270/gui/instance"
 require "tn3270/gui/keymap"
+require "tn3270/gui/hit_map"
+require "tn3270/gui/theme"
 
 class TabStripTest < Minitest::Test
   S = Tn3270::Gui::TabStrip
@@ -238,5 +240,50 @@ class DuplicateConnectionNameTest < Minitest::Test
     assert_equal "Prod (2)", copy("Prod", ["Prod"])
     assert_equal "Prod (3)", copy("Prod", ["Prod", "Prod (2)"])
     assert_equal "Prod (3)", copy("Prod (2)", ["Prod", "Prod (2)"]) # a copy of a copy
+  end
+end
+
+class TabColorTest < Minitest::Test
+  FakeController = Struct.new(:last_target)
+
+  def tab(config, target) = Tn3270::Gui::Tab.new(config, controller: FakeController.new(target))
+
+  def test_a_saved_session_gives_its_tabs_its_color
+    prod = { "name" => "PROD", "host" => "prod.example", "port" => 992, "color" => "red" }
+    config = { "connections" => [prod, { "name" => "TEST", "host" => "test.example", "port" => 23 }] }
+    assert_equal "red", tab(config, prod.dup).color
+    assert_nil tab(config, config["connections"][1]).color
+    # typed as host:port, it is still that session
+    assert_equal "red", tab(config, { "name" => "", "host" => "PROD.example", "port" => 992 }).color
+    # the color follows the saved session when it is edited later
+    t = tab(config, prod.merge("color" => ""))
+    prod["color"] = "blue"
+    assert_equal "blue", t.color
+    assert Tn3270::Gui::Theme::TAB_COLORS.key?(t.color)
+  end
+
+  def test_a_session_that_is_not_saved_keeps_a_color_of_its_own
+    t = tab({ "connections" => [] }, { "name" => "10.0.0.9:23", "host" => "10.0.0.9", "port" => 23 })
+    assert_nil t.color
+    assert_nil t.saved_connection
+    t.color = "green"
+    assert_equal "green", t.color
+    t.color = nil
+    assert_nil t.color
+    assert_nil tab({}, nil).color # a new tab
+  end
+end
+
+class HitMapTest < Minitest::Test
+  def test_the_first_thing_added_at_a_point_wins
+    map = Tn3270::Gui::HitMap.new
+    assert_nil map.at(x: 5, y: 5)
+    map.add(90, 0, 10, 10, [:tab_close, 0]).add(0, 0, 100, 10, [:tab, 0]).add(100, 0, 20, 10, :new_tab)
+    assert_equal [:tab_close, 0], map.at(x: 95, y: 5) # the close button is on the tab
+    assert_equal [:tab, 0], map.at(x: 50, y: 5)
+    assert_equal :new_tab, map.at(x: 110, y: 10)
+    assert_nil map.at(x: 50, y: 11)
+    assert_equal [0, 0, 100, 10], map.rect([:tab, 0])
+    assert_nil map.rect(:missing)
   end
 end

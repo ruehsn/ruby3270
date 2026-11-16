@@ -33,11 +33,7 @@ module Tn3270
     end
 
     def initialize(status)
-      @status = status
-      @rows = status&.rows.to_i.positive? ? status.rows : 24
-      @cols = status&.cols.to_i.positive? ? status.cols : 80
-      @cursor_row = status&.cursor_row.to_i
-      @cursor_col = status&.cursor_col.to_i
+      self.status = status
       @cells = Array.new(@rows * @cols, BLANK)
       @fields = []
       @row_texts = []
@@ -84,9 +80,17 @@ module Tn3270
 
     # Every place `term` appears, row by row: [[row, col, length], ...].
     # Matches don't run across the end of a row.
+    # (Worked out once per screen and search; the list is frozen.)
     def find(term, match_case: false)
       return [] if term.to_s.empty?
 
+      memo([:find, term, match_case]) { find_all(term, match_case).freeze }
+    end
+
+    # The input fields, in screen order (a frozen list, worked out once).
+    def input_fields = memo(:input_fields) { @fields.select(&:input?).freeze }
+
+    def find_all(term, match_case)
       needle = match_case ? term : term.downcase
       (0...@rows).flat_map do |r|
         line = match_case ? row_text(r) : row_text(r).downcase
@@ -100,8 +104,6 @@ module Tn3270
       end
     end
 
-    def input_fields = @fields.select(&:input?)
-
     def field_at(row, col)
       pos = (row * @cols) + col
       @fields.find do |f|
@@ -114,8 +116,7 @@ module Tn3270
     #   screen.field_after("USER ID")
     def field_after(label)
       input_fields.find do |f|
-        before = row_text(f.row)[0...f.col]
-        before.rstrip.end_with?(label) || before.include?(label)
+        row_text(f.row)[0...f.col].include?(label)
       end
     end
 

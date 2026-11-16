@@ -10,12 +10,28 @@ module Tn3270
     # (Unicode text, no helper programs); elsewhere it uses pbcopy / xclip.
     module Clipboard
       CF_UNICODETEXT = 13
+      CF_DIB = 8
       GMEM_MOVEABLE = 0x2
 
       module_function
 
       def copy(text)
         Config::WINDOWS ? win_copy(text.to_s) : tool_copy(text.to_s)
+      rescue StandardError
+        false
+      end
+
+      # Puts a picture (a Screenshot::Shot) on the clipboard, as a bitmap and
+      # as PNG, so it pastes into mail, documents and chat. Windows only.
+      def copy_image(shot)
+        return false unless Config::WINDOWS && shot&.dib
+
+        with_clipboard do
+          api[:empty].call
+          ok = put(CF_DIB, shot.dib)
+          put(api[:register].call(Fiddle::Pointer["PNG\0".encode("UTF-16LE")]), shot.png) if shot.png
+          ok
+        end || false
       rescue StandardError
         false
       end
@@ -39,6 +55,7 @@ module Tn3270
           {
             open: fn.(u, "OpenClipboard", [ptr], int), close: fn.(u, "CloseClipboard", [], int),
             empty: fn.(u, "EmptyClipboard", [], int), set: fn.(u, "SetClipboardData", [int, ptr], ptr),
+            register: fn.(u, "RegisterClipboardFormatW", [ptr], int),
             get: fn.(u, "GetClipboardData", [int], ptr), alloc: fn.(k, "GlobalAlloc", [int, size], ptr),
             lock: fn.(k, "GlobalLock", [ptr], ptr), unlock: fn.(k, "GlobalUnlock", [ptr], int),
             size: fn.(k, "GlobalSize", [ptr], size), free: fn.(k, "GlobalFree", [ptr], ptr)
@@ -64,17 +81,22 @@ module Tn3270
         data = "#{text.gsub(/\r?\n/, "\r\n")}\0".encode("UTF-16LE").b
         with_clipboard do
           api[:empty].call
-          handle = api[:alloc].call(GMEM_MOVEABLE, data.bytesize)
-          ptr = api[:lock].call(handle)
-          ptr[0, data.bytesize] = data
-          api[:unlock].call(handle)
-          if api[:set].call(CF_UNICODETEXT, handle).null?
-            api[:free].call(handle)
-            false
-          else
-            true # the clipboard owns the memory now
-          end
+          put(CF_UNICODETEXT, data)
         end || false
+      end
+
+      # Hands the open clipboard some bytes in a format. True if it took them.
+      def put(format, data)
+        handle = api[:alloc].call(GMEM_MOVEABLE, data.bytesize)
+        ptr = api[:lock].call(handle)
+        ptr[0, data.bytesize] = data
+        api[:unlock].call(handle)
+        if api[:set].call(format, handle).null?
+          api[:free].call(handle)
+          false
+        else
+          true # the clipboard owns the memory now
+        end
       end
 
       def win_paste

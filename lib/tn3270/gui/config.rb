@@ -23,7 +23,8 @@ module Tn3270
         "name" => "Local fake host", "host" => "127.0.0.1", "port" => 3270, "tls" => false,
         "lu" => "", "rows" => 62, "cols" => 160,
         "verify_cert" => false, # TLS: check the host's certificate (off: self-signed certificates work)
-        "script" => "" # Ruby file run each time this connection comes up ("" = none)
+        "script" => "", # Ruby file run each time this connection comes up ("" = none)
+        "color" => "" # its tabs' color: red, orange, yellow, green, blue, purple ("" = none)
       }.freeze
 
       DEFAULTS = {

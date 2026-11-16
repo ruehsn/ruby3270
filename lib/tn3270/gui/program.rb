@@ -361,6 +361,7 @@ module Tn3270
 
       # Key binding action shown as a menu item's shortcut, by menu command.
       SHORTCUTS = { new_tab: "new_tab", close_tab: "close_tab", copy: "copy", paste: "paste", undo: "undo", show_find: "find",
+                    paste_rest: "paste_rest", copy_audit_picture: "audit_copy", save_audit_picture: "audit_save",
                     open_picker: "snippet_picker", show_history: "history", caps: "caps",
                     crosshair: "crosshair", snippet_bar: "snippet_bar" }.freeze
 
@@ -415,6 +416,7 @@ module Tn3270
         item(m, "New Window", shortcut: "new_window") { new_window }
         item(m, "Duplicate Tab", :duplicate_tab)
         item(m, "Rename Tab", :rename_tab)
+        item(m, "Tab Color...", :choose_tab_color) if Win32.available?
         item(m, "Edit Session...", :edit_session)
         item(m, "Close Tab", :close_tab)
         item(m, "Move Tab to New Window", :tab_to_new_window)
@@ -442,6 +444,12 @@ module Tn3270
         item(m, "Copy (selection or screen)", :copy)
         item(m, "Copy Whole Screen", :copy_screen)
         item(m, "Paste", :paste)
+        item(m, "Paste the Rest (lines that had no room)", :paste_rest)
+        if Win32.available?
+          UI.menu_append_separator(m)
+          item(m, "Copy Window as Picture (with date and time)", :copy_audit_picture)
+          item(m, "Save Window as PNG (with date and time)...", :save_audit_picture)
+        end
         UI.menu_append_separator(m)
         item(m, "Find...", :show_find)
         UI.menu_append_separator(m)

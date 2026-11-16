@@ -31,6 +31,7 @@ module Tn3270
       include DialogSupport
 
       SIZE_LABELS = Config::SIZES.map(&:first) + ["Custom"]
+      COLORS = ["", *Theme::TAB_COLORS.keys].freeze # a connection's "color"; "" = none
       MAX_CELLS = 16_383 # 3270 buffer addresses are 14 bits
 
       # select: a connection to open the dialog on (Session > Edit Session);
@@ -70,6 +71,7 @@ module Tn3270
         @tls = Ui.form_row(form, "Security", Ui.checkbox("Use TLS") { update_verify })
         @verify = Ui.form_row(form, "", Ui.checkbox("Verify the host's certificate (leave off for self-signed certificates)"))
         @lu = Ui.form_row(form, "LU name (optional)", Ui.entry)
+        @color = Ui.form_row(form, "Tab color", Ui.combobox(COLORS.map { |c| c.empty? ? "None" : c.capitalize }))
         @size = Ui.form_row(form, "Screen size", Ui.combobox(SIZE_LABELS) { |i| size_picked(i) })
         @rows = Ui.form_row(form, "Rows", Ui.spinbox(24, 255, 24) { size_typed })
         @cols = Ui.form_row(form, "Columns", Ui.spinbox(80, 255, 80) { size_typed })
@@ -193,6 +195,7 @@ module Tn3270
         UI.checkbox_set_checked(@verify, Ui.flag(c["verify_cert"]))
         update_verify
         UI.entry_set_text(@lu, c["lu"].to_s)
+        UI.combobox_set_selected(@color, COLORS.index(c["color"].to_s) || 0)
         UI.entry_set_text(@script, c["script"].to_s)
         rows = c["rows"].to_i
         cols = c["cols"].to_i
@@ -227,7 +230,7 @@ module Tn3270
           "name" => Ui.entry_text(@name).strip, "host" => Ui.entry_text(@host).strip,
           "port" => UI.spinbox_value(@port), "tls" => Ui.checked?(@tls), "verify_cert" => Ui.checked?(@verify),
           "lu" => Ui.entry_text(@lu).strip, "rows" => UI.spinbox_value(@rows), "cols" => UI.spinbox_value(@cols),
-          "script" => Ui.entry_text(@script).strip
+          "script" => Ui.entry_text(@script).strip, "color" => COLORS[UI.combobox_selected(@color)].to_s
         }
       end
 

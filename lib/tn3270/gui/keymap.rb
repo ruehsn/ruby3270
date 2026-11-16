@@ -10,6 +10,8 @@ module Tn3270
     #   [:key, :pf13]                  an AID or editing key for Session#press
     #   [:type, "a"]                   a character to type
     #   [:copy] / [:paste]             clipboard
+    #   [:paste_rest]                  the lines the last paste had no room for
+    #   [:audit_copy] / [:audit_save]  a picture of the window, time-stamped
     #   [:undo]                        take back the last paste or typing
     #   [:history]                     open the screen history window
     #   nil                            not ours; let it pass through
@@ -44,7 +46,7 @@ module Tn3270
       # Every action a key can be bound to, with its label for menus and help.
       ACTIONS = {
         "enter" => "Enter", "clear" => "Clear", "reset" => "Reset (unlock)",
-        "escape" => "Reset if the keyboard is locked, otherwise Clear",
+        "escape" => "Reset if the keyboard is locked, otherwise nothing",
         "attn" => "Attn", "sysreq" => "SysReq",
         **(1..24).to_h { |n| ["pf#{n}", "PF#{n}"] },
         **(1..3).to_h { |n| ["pa#{n}", "PA#{n}"] },
@@ -54,6 +56,9 @@ module Tn3270
         "insert" => "Toggle insert mode",
         "up" => "Cursor up", "down" => "Cursor down", "left" => "Cursor left", "right" => "Cursor right",
         "copy" => "Copy", "paste" => "Paste",
+        "paste_rest" => "Paste the rest (the lines the last paste had no room for)",
+        "audit_copy" => "Copy the window as a picture, date and time in the status bar",
+        "audit_save" => "Save the window as a PNG file, date and time in the status bar",
         "undo" => "Undo (the last paste, snippet or typing)",
         "history" => "Screen history window",
         "find" => "Find on screen / in history",
@@ -111,6 +116,7 @@ module Tn3270
         "Insert" => "insert", "Delete" => "delete", "Backspace" => "backspace",
         "Up" => "up", "Down" => "down", "Left" => "left", "Right" => "right",
         "Ctrl+C" => "copy", "Ctrl+V" => "paste", "Ctrl+Z" => "undo",
+        "Ctrl+Shift+V" => "paste_rest", "Ctrl+Shift+C" => "audit_copy",
         "Ctrl+H" => "history", "Ctrl+PageUp" => "history",
         "Ctrl+F" => "find", "Ctrl+Shift+X" => "crosshair",
         "Ctrl+Space" => "snippet_picker", "Ctrl+Shift+S" => "snippet_bar", "Ctrl+;" => "spell_next",
@@ -190,7 +196,8 @@ module Tn3270
         when "snippet_picker" then [:snippet_picker]
         when "snippet_bar" then [:snippet_bar]
         when "spell_next" then [:spell_next]
-        when "new_tab", "close_tab", "new_window", "next_tab", "prev_tab" then [action.to_sym]
+        when "new_tab", "close_tab", "new_window", "next_tab", "prev_tab", "paste_rest", "audit_copy", "audit_save"
+          [action.to_sym]
         when /\Asnippet(\d)\z/ then [:snippet, Regexp.last_match(1).to_i]
         else [:key, action.to_sym]
         end

@@ -39,6 +39,9 @@ class KeymapTest < Minitest::Test
     assert_equal [:key, :erase_eof], K.translate(ev(ext_key: :end))
     assert_equal [:key, :reset], K.translate(ev(key: "r", modifiers: [:ctrl]))
     assert_equal [:paste], K.translate(ev(key: "v", modifiers: [:ctrl]))
+    assert_equal [:paste_rest], K.translate(ev(key: "v", modifiers: %i[ctrl shift]))
+    assert_equal [:audit_copy], K.translate(ev(key: "c", modifiers: %i[ctrl shift]))
+    assert_equal [:audit_save], K.action_result("audit_save")
     assert_equal [:undo], K.translate(ev(key: "z", modifiers: [:ctrl]))
   end
 
@@ -259,8 +262,54 @@ abcdefghij")
 two
 three")
     wait_until { @c.message.to_s.include?("no room below") }
-    assert_equal "Pasted 1 of 3 lines (no room below)", @c.message
+    assert_match(/\APasted 1 of 3 lines \(no room below\)\. Scroll, .*Paste the Rest/, @c.message)
+    assert_equal 2, @c.paste_rest_count
     refute_includes edit_row(3), "two" # never wrapped round to the command line
+  end
+
+  # The lines that had no room are kept: after scrolling (here, just moving
+  # the cursor up) Paste the Rest carries on with them.
+  def test_paste_the_rest_carries_on_where_the_cursor_is
+    open_editor
+    @c.move_to(@c.rows - 4, 7) # the editor's last row
+    @c.paste("one\ntwo\nthree")
+    wait_until { @c.paste_rest_count == 2 }
+    @c.move_to(6, 7)
+    @c.paste_rest
+    wait_until { edit_row(7).include?("three") }
+    assert_includes edit_row(6), "two"
+    assert_equal 0, @c.paste_rest_count
+    @c.paste_rest
+    wait_until { @c.message == "Nothing left to paste" }
+  end
+
+  # A bug in a queued job must not end the worker: the tab would stop
+  # taking keys for good, with nothing to show why.
+  def test_the_worker_survives_an_unexpected_error
+    sign_on_to("1", "KEY TESTER")
+    @c.send(:enqueue) { raise "boom" }
+    wait_until { @c.message == "RuntimeError: boom" }
+    @c.type("still here")
+    wait_until { @c.screen_text.include?("still here") }
+  end
+
+  def test_history_screens_are_kept_packed
+    sign_on_to("1", "KEY TESTER")
+    entry = @c.history.first
+    assert_includes entry.screen.text, "USER ID"
+    assert_operator entry.packed.bytesize, :<, entry.lines.join("\n").bytesize / 4
+  end
+
+  # A tab that isn't on show is polled less often, and catches up at once
+  # when it is shown again.
+  def test_a_background_tab_catches_up_when_shown
+    sign_on_to("1", "KEY TESTER")
+    @c.background = true
+    @c.type("in the background") # keys still go straight through
+    wait_until { @c.screen_text.include?("in the background") }
+    @c.background = false
+    @c.type(" and back")
+    wait_until { @c.screen_text.include?("in the background and back") }
   end
 
   # ---- Ctrl+Z ---------------------------------------------------------------
@@ -557,13 +606,16 @@ type('hunter2')
     assert_includes @c.screen_text.lines[8], "the batch job ran"
   end
 
-  def test_escape_is_clear_when_unlocked
+  def test_escape_does_nothing_when_unlocked
     sign_on_to("1", "KEY TESTER")
-    # The screen can arrive a moment before the keyboard unlocks (and Escape
-    # on a locked keyboard is Reset, not Clear).
     wait_until { !@c.snapshot&.status&.keyboard_locked? }
+    before = @c.screen_text
     @c.press(:escape)
-    wait_until { @c.screen_text.match?(/Last AID received:\s+CLEAR/) }
+    sleep 0.5
+    assert_equal before, @c.screen_text
+    refute_match(/Last AID received:\s+CLEAR/, @c.screen_text)
+    @c.type("still works") # the worker is alive and takes keys
+    wait_until { @c.screen_text.include?("still works") }
   end
 
   def test_shutdown_during_a_hanging_connect

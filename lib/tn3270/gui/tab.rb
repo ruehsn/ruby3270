@@ -42,11 +42,27 @@ module Tn3270
         n = target["name"].to_s.strip
         return n unless n.empty?
 
-        saved = Array(@config["connections"]).find do |c|
-          c["host"].to_s.strip.casecmp?(target["host"].to_s.strip) && c["port"].to_i == target["port"].to_i
-        end
-        n = saved && saved["name"].to_s.strip
-        n.nil? || n.empty? ? nil : n
+        n = saved_by_address(target)&.fetch("name", nil).to_s.strip
+        n.empty? ? nil : n
+      end
+
+      # The saved connection this tab is on, as it is saved now (it may have
+      # been edited since the tab connected), or nil.
+      def saved_connection
+        target = @controller.last_target or return nil
+        n = target["name"].to_s.strip
+        Array(@config["connections"]).find { |c| !n.empty? && c["name"].to_s.strip == n } || saved_by_address(target)
+      end
+
+      # A color given to this tab alone (a session that isn't saved has
+      # nowhere else to keep one).
+      attr_writer :color
+
+      # The tab's color name ("red"...), or nil: the saved session's, else its own.
+      def color
+        c = (saved_connection || {})["color"].to_s
+        c = @color.to_s if c.empty?
+        c.empty? ? nil : c
       end
 
       # Tabs open on the same session are numbered: "PROD", "PROD (2)"...
@@ -110,6 +126,14 @@ module Tn3270
       def idle? = state == :offline
 
       def shutdown = @controller.shutdown
+
+      private
+
+      def saved_by_address(target)
+        Array(@config["connections"]).find do |c|
+          c["host"].to_s.strip.casecmp?(target["host"].to_s.strip) && c["port"].to_i == target["port"].to_i
+        end
+      end
     end
 
     # Where tabs go in a strip, kept apart from the drawing so it can be tested.

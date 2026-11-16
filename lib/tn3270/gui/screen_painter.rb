@@ -2,19 +2,35 @@
 
 require_relative "ui"
 require_relative "font_metrics"
+require_relative "theme"
 
 module Tn3270
   module Gui
     # Draws on a libui drawing context. One Painter is reused for every
     # frame: its brush, stroke and font structs are allocated once.
     #   painter.context = params[:context]  (inside an Area's draw handler)
+    #
+    # Laid-out text is kept from one frame to the next: most frames draw the
+    # same text as the one before (the cursor moved, the pointer is over a
+    # button), and laying text out is the slow part of drawing it. Text a
+    # frame didn't draw is freed when the next frame starts.
     class Painter
       ALIGN = { left: UI::DrawTextAlignLeft, center: UI::DrawTextAlignCenter, right: UI::DrawTextAlignRight }.freeze
       CAPS = { flat: UI::DrawLineCapFlat, round: UI::DrawLineCapRound }.freeze
 
-      attr_accessor :context
+      attr_reader :context
+
+      # Starts a frame.
+      def context=(context)
+        @context = context
+        @stale.each_value { |layout, string| free_layout(layout, string) }
+        @stale = @layouts
+        @layouts = {}
+      end
 
       def initialize
+        @layouts = {} # [text, color, font...] => [layout, its string], drawn this frame
+        @stale = {}   # ...drawn last frame and not yet this one
         @brush = UI::FFI::DrawBrush.malloc
         @brush.Type = UI::DrawBrushTypeSolid
         @stroke = UI::FFI::DrawStrokeParams.malloc
@@ -63,6 +79,15 @@ module Tn3270
       def text(x, y, width, str, rgb, family, size, bold: false, align: :left, alpha: 1.0)
         return if str.nil? || str.empty?
 
+        key = [str, rgb, family, size, bold, width, align, alpha]
+        entry = @layouts[key] ||= @stale.delete(key) || new_layout(str, rgb, family, size, bold, width, align, alpha)
+        UI.draw_text(@context, entry[0], x, y)
+      end
+
+      private
+
+      # [layout, attributed string]: the string is kept for as long as the layout.
+      def new_layout(str, rgb, family, size, bold, width, align, alpha)
         s = UI.new_attributed_string(str)
         attr = UI.new_color_attribute(rgb[0] / 255.0, rgb[1] / 255.0, rgb[2] / 255.0, alpha)
         UI.attributed_string_set_attribute(s, attr, 0, str.bytesize) # the string owns the attribute now
@@ -70,13 +95,13 @@ module Tn3270
         @layout.DefaultFont = font(family, size, bold)
         @layout.Width = width
         @layout.Align = ALIGN.fetch(align)
-        layout = UI.draw_new_text_layout(@layout)
-        UI.draw_text(@context, layout, x, y)
-        UI.draw_free_text_layout(layout)
-        UI.free_attributed_string(s)
+        [UI.draw_new_text_layout(@layout), s]
       end
 
-      private
+      def free_layout(layout, string)
+        UI.draw_free_text_layout(layout)
+        UI.free_attributed_string(string)
+      end
 
       def set_brush(rgb, alpha)
         @brush.R = rgb[0] / 255.0
@@ -124,15 +149,7 @@ module Tn3270
 
     # Drawing shared by the main window and the history window.
     module ScreenPainter
-      # 3270 color name -> RGB
-      PALETTE = {
-        neutral: [0xE0, 0xE0, 0xE0], blue: [0x6C, 0x9B, 0xFF], red: [0xFF, 0x55, 0x55],
-        pink: [0xFF, 0x79, 0xE6], green: [0x4C, 0xE0, 0x6A], turquoise: [0x3F, 0xE0, 0xE0],
-        yellow: [0xFF, 0xE0, 0x4C], white: [0xF4, 0xF4, 0xF4], black: [0x00, 0x00, 0x00],
-        deep_blue: [0x5A, 0x6C, 0xF0], orange: [0xFF, 0xA5, 0x33], purple: [0xB3, 0x7D, 0xFF],
-        pale_green: [0xA8, 0xF0, 0xA8], pale_turquoise: [0xAF, 0xEE, 0xEE], grey: [0xA0, 0xA0, 0xA0]
-      }.freeze
-      BACKGROUND = [0x0B, 0x0E, 0x12].freeze
+      include Theme
 
       # Largest font size that fits rows x cols (plus `extra_rows`) into the
       # box, and the grid placed in its center:
