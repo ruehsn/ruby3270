@@ -47,7 +47,13 @@ module Tn3270
     #   Tn3270::Session.attach do |s|
     #     puts s.text
     #   end
-    def self.attach(port: 3271, host: "127.0.0.1", timeout: 10)
+    #
+    # tab: attach to the tab with this name instead (as the tab shows it, so
+    # a renamed tab goes by its new name; any case), wherever its port is:
+    #
+    #   Tn3270::Session.attach(tab: "Payroll") { |s| puts s.line(0) }
+    def self.attach(port: 3271, host: "127.0.0.1", timeout: 10, tab: nil)
+      port = port_of_tab(tab) if tab
       session = new(engine: Engine.attach(port: port, host: host), timeout: timeout)
       return session unless block_given?
 
@@ -55,6 +61,52 @@ module Tn3270
         yield session
       ensure
         session.close
+      end
+    end
+
+    # The script port of the ruby3270 tab named `name`.
+    def self.port_of_tab(name)
+      require_relative "gui/instance"
+      Gui::Instance.find_tab(name) or
+        raise Error, "ruby3270 isn't running (start it first; Config single_instance must be on)"
+    end
+
+    # Opens a new tab in the running ruby3270 window, connects it, and
+    # returns a session attached to it, so you watch the script work and the
+    # tab stays open afterwards. Give a host ("host:port", ...) or the name of
+    # a saved session. With wait: true (the default) it returns once the host
+    # shows an input field.
+    #
+    #   Tn3270::Session.open_in_window("mvs.example.com:23") do |s|
+    #     s.logon("USER01", ENV["TSO_PW"], wait_for: "READY")
+    #   end   # lets go; the tab stays open
+    #
+    # Raises Tn3270::Error if ruby3270 isn't running (or single_instance is
+    # off) or doesn't allow scripts to attach.
+    def self.open_in_window(host = nil, session: nil, wait: true, timeout: 10, &block)
+      raise ArgumentError, "give a host or a session name" unless host || session
+
+      require_relative "gui/instance"
+      request = { "host" => host, "session" => session }.compact
+      port = Gui::Instance.open_tab(request, timeout: timeout + 5)
+      raise Error, "ruby3270 isn't running (start it first; Config single_instance must be on)" unless port
+
+      s = attach(port: port, timeout: timeout)
+      begin
+        if wait
+          s.wait_until(timeout: timeout, message: "the connection") { s.connected? }
+          s.wait_for_input(timeout: timeout)
+        end
+      rescue StandardError
+        s.close
+        raise
+      end
+      return s unless block
+
+      begin
+        yield s
+      ensure
+        s.close
       end
     end
 

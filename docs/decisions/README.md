@@ -2,6 +2,7 @@
 
 One file per work session, newest first.
 
+- [2026-11-16 — Program Settings, tabs from scripts, active tab and desktop shortcuts](2026-11-16-program-settings-scripted-tabs-shortcuts.md)
 - [2026-11-16 — Review fixes, Paste the Rest, tab colors and the audit picture](2026-11-16-review-fixes-paste-rest-tab-colors-audit-picture.md)
 - [2026-11-10 — Undo with Ctrl+Z](2026-11-10-undo.md)
 - [2026-11-10 — Multi-line paste, spelling word files, status bar and script folders](2026-11-10-paste-spelling-status-bar-script-folders.md)

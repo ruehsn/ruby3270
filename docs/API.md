@@ -13,13 +13,15 @@ require "tn3270"   # with the repo's lib/ on the load path: ruby -Ilib my_script
 To try anything here without a mainframe, run `ruby bin/fake_host` and connect to
 `127.0.0.1:3270`. Sign on with any user ID.
 
-- [Two ways in](#two-ways-in): start a new session, or attach to the one open in the window
+- [Ways in](#two-ways-in): start a hidden session, attach to the one in the window, or open a new tab in the window
 - [A complete script](#a-complete-script)
 - [Reference](#reference): connecting, typing, keys, waiting, reading, everyday helpers
 - [Recipes](#recipes): common jobs, step by step
 - [Startup scripts](#startup-scripts), [errors](#errors), [raw actions](#anything-else), [testing](#testing-scripts)
 
 ## Two ways in
+
+(Three, counting [opening a new tab](#open-a-new-tab-in-the-window) from a script.)
 
 **Start a new session.** The script starts its own engine, connects, and closes everything at the
 end. Nothing shows on screen. Good for batch jobs.
@@ -53,7 +55,49 @@ end                                    # lets go; the window carries on
 
 Avoid typing in the window while a script is working on it: both go to the same session.
 
+**Attach by tab name.** With several tabs, you don't need to know which port each one has: name the
+tab instead. Rename a tab (double-click it, or Session > Rename Tab) and attach by that name; a tab
+that isn't renamed goes by its session name (`"PROD (2)"` for a second tab on PROD). Any case.
+
+```ruby
+Tn3270::Session.attach(tab: "Payroll") do |s|
+  puts s.line(0)
+end
+```
+
+This asks the running ruby3270 which port that tab has (so **single_instance** must be on, as it is
+by default) and raises `Tn3270::Error` if no open tab has that name.
+
 See [examples/attach_to_session.rb](../examples/attach_to_session.rb) for a full example.
+
+### Open a new tab in the window
+
+**Create a session in the window from code.** The script asks the running ruby3270 for a new tab,
+which connects to the host you give (or to a saved session by name), and gets back a session
+attached to that tab. You watch it work, and the tab stays open when the script ends. This is the
+way to start sessions dynamically, for example one tab per LPAR:
+
+```ruby
+%w[lpar1.example.com:23 lpar2.example.com:23].each do |host|
+  Tn3270::Session.open_in_window(host) do |s|     # waits until the host shows an input field
+    s.logon("USER01", ENV["TSO_PW"], wait_for: "READY")
+  end                                             # lets go; the tab stays open
+end
+
+Tn3270::Session.open_in_window(session: "Prod LPAR") { |s| puts s.line(0) }   # a saved session
+```
+
+`open_in_window(host = nil, session: nil, wait: true, timeout: 10)`: give `host` (the same forms
+as `connect`) or `session:` (a saved session's name; one that isn't saved is tried as `host:port`).
+With `wait: false` it returns as soon as the tab is attached, before the host has answered. Without a
+block it returns the session; call `close` to let go (the tab stays). To close the connection too,
+call `disconnect` first. An idle tab (one with no session) is used before a new tab is made.
+
+It raises `Tn3270::Error` when ruby3270 isn't running, when **single_instance** is off in the
+config (that is how the window hears the request), or when **Session > Allow Scripts to Attach**
+is off or every port is taken. Like attaching, it works only from the same computer and user:
+the request carries a secret that only your user can read from `~/.ruby3270.instance`.
+See [examples/open_in_window.rb](../examples/open_in_window.rb).
 
 ## A complete script
 
@@ -86,6 +130,8 @@ Rows and columns are **0-based** everywhere: the top-left corner is row 0, colum
 | --- | --- |
 | `Session.open(host, **opts) { \|s\| ... }` | Starts an engine, connects, runs the block, always closes. Without a block it returns the session; call `close` yourself. |
 | `Session.attach(port: 3271) { \|s\| ... }` | Joins the session open in the ruby3270 window (see [Two ways in](#two-ways-in)). `close` lets go without disconnecting it. |
+| `Session.attach(tab: "Payroll") { \|s\| ... }` | The same, for the open tab with that name (renamed or not), wherever its port is. |
+| `Session.open_in_window(host or session:) { |s| ... }` | Opens a new tab in the ruby3270 window and attaches to it ([above](#open-a-new-tab-in-the-window)). |
 | `Session.new(**opts)` then `connect(host)` | Like `open`, in two steps. |
 | `disconnect` / `close` | Drops the connection / also stops the engine (attached: just lets go). |
 | `connected?`, `attached?`, `status` | Connection state, whether this is an attached session, and the latest status line. |
@@ -268,7 +314,7 @@ after an error (`X -f` in the status bar): `s.press(:reset)` clears that.
 
 ## Startup scripts
 
-A saved connection can run a script each time it connects (Session > Connections > Startup
+A saved connection can run a script each time it connects (Session > Edit Session > Startup
 script), for example to sign on. It runs in its own process, attached to that tab's session
 through its script port, so the window stays usable. A Ruby script has the session methods
 available directly:

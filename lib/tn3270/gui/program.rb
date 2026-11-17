@@ -237,9 +237,36 @@ module Tn3270
       # Another launch of the app sent this: open its session in a tab of the
       # window in front, or (no session given) open a new window.
       def handle_request(request)
+        reply = request.delete("reply")
+        return reply&.push(find_tab(request["tab"])&.controller&.attach_port) if request.key?("tab")
+
         w = request.empty? || active_window.nil? ? new_window : active_window
-        w.open_request(request) unless request.empty?
+        tab = w.open_request(request) unless request.empty?
         Win32.bring_to_front(w.ui_window)
+        answer_with_port(tab, reply) if reply
+      end
+
+      # The open tab (in any window) whose name is `name`, as the tab shows it
+      # or as its session is called; any case.
+      def find_tab(name)
+        tabs = @windows.flat_map(&:tabs)
+        name = name.to_s.strip
+        tabs.find { |t| t.title.casecmp?(name) } || tabs.find { |t| t.name.to_s.casecmp?(name) }
+      end
+
+      # A script asked for a tab (Session.open_in_window) and waits for its
+      # script port. The tab's engine starts on its own thread, so wait there.
+      def answer_with_port(tab, reply)
+        Thread.new do
+          port = nil
+          100.times do
+            port = tab&.controller&.attach_port
+            break if port
+
+            sleep 0.1
+          end
+          reply << port # nil: no port (the script gets an error)
+        end
       end
 
       def window_for(ptr)
@@ -418,10 +445,10 @@ module Tn3270
         item(m, "Rename Tab", :rename_tab)
         item(m, "Tab Color...", :choose_tab_color) if Win32.available?
         item(m, "Edit Session...", :edit_session)
+        item(m, "Program Settings...", :settings_dialog)
         item(m, "Close Tab", :close_tab)
         item(m, "Move Tab to New Window", :tab_to_new_window)
         UI.menu_append_separator(m)
-        item(m, "Connections...", :connections_dialog)
         item(m, "Connect / Disconnect", :toggle_connection)
         check_item(m, "Allow Scripts to Attach", c["allow_attach"], words: "scripting port attach api") do |_w, on|
           c["allow_attach"] = on
@@ -464,8 +491,8 @@ module Tn3270
         check_item(m, "Auto Enter (press Enter every #{seconds}s, to watch a job)", false, :auto_enter, words: "refresh repeat") do |w, on|
           w&.command(:set_auto_enter, on)
         end
-        check_item(m, "Type-Ahead (queue keys while the host is busy)", c["typeahead"], words: "typeahead queue") { |_w, on| save_option("typeahead", on) }
-        check_item(m, "Numeric Fields: Digits Only", c["numeric_lock"], words: "numbers numeric lock") { |_w, on| save_option("numeric_lock", on) }
+        check_item(m, "Type-Ahead (queue keys while the host is busy)", c["typeahead"], :typeahead, words: "typeahead queue") { |_w, on| save_option("typeahead", on) }
+        check_item(m, "Numeric Fields: Digits Only", c["numeric_lock"], :numeric_lock, words: "numbers numeric lock") { |_w, on| save_option("numeric_lock", on) }
         UI.menu_append_separator(m)
         %i[pa1 pa2 pa3 clear attn sysreq reset erase_input].each do |k|
           item(m, k.to_s.upcase.tr("_", " "), :send_key, k)
@@ -483,11 +510,11 @@ module Tn3270
         check_item(m, "Underline Input Fields", c["underline_input_fields"], words: "fields") { |_w, on| for_all(:set_underline, on) }
         if Win32.available?
           UI.menu_append_separator(m)
-          check_item(m, "Spell Check (long input fields)", c["spell_check"], words: "spelling spellcheck") { |_w, on| for_all(:set_spell_check, on) }
+          check_item(m, "Spell Check (long input fields)", c["spell_check"], :spell_check, words: "spelling spellcheck") { |_w, on| for_all(:set_spell_check, on) }
           item(m, "Spell Check Language...", :choose_spell_language)
           item(m, "Edit My Spelling Words...", :edit_spell_words)
           UI.menu_append_separator(m)
-          check_item(m, "Lock Window Shape to the Screen", c["lock_ratio"], words: "aspect ratio resize") { |_w, on| for_all(:set_lock_ratio, on) }
+          check_item(m, "Lock Window Shape to the Screen", c["lock_ratio"], :lock_ratio, words: "aspect ratio resize") { |_w, on| for_all(:set_lock_ratio, on) }
         end
 
         m = UI.new_menu("Help")

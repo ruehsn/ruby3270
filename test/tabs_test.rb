@@ -149,6 +149,64 @@ class InstanceTest < Minitest::Test
     end
   end
 
+  # A script asks for a tab and is told its script port.
+  def test_open_tab_returns_the_new_tabs_port
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "instance")
+      running = I.new(path: path)
+      app = Thread.new do
+        got = nil
+        50.times do
+          got = running.requests.first
+          break if got
+
+          sleep 0.05
+        end
+        got["reply"] << 3275
+        got
+      end
+      assert_equal 3275, I.open_tab({ "host" => "x:23" }, path: path, timeout: 5)
+      request = app.value
+      assert_equal "x:23", request["host"]
+      refute request.key?("want")
+      running.close
+      assert_nil I.open_tab({ "host" => "x:23" }, path: path) # nothing running
+    end
+  end
+
+  # Session.attach(tab: "name") asks the app for that tab's port.
+  def test_find_tab_asks_for_a_tab_by_name
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "instance")
+      running = I.new(path: path)
+      Thread.new do
+        sleep 0.05 until (r = running.requests.first)
+        r["reply"] << (r["tab"] == "Payroll" ? 3281 : nil)
+      end
+      assert_equal 3281, I.find_tab("Payroll", path: path)
+      Thread.new do
+        sleep 0.05 until (r = running.requests.first)
+        r["reply"] << nil
+      end
+      e = assert_raises(Tn3270::Error) { I.find_tab("Nope", path: path) }
+      assert_match(/No tab named "Nope"/, e.message)
+      running.close
+    end
+  end
+
+  def test_open_tab_says_when_the_tab_has_no_port
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "instance")
+      running = I.new(path: path)
+      Thread.new do
+        sleep 0.1 until (r = running.requests.first)
+        r["reply"] << nil
+      end
+      assert_raises(Tn3270::Error) { I.open_tab({ "host" => "x:23" }, path: path, timeout: 5) }
+      running.close
+    end
+  end
+
   def test_needs_the_token
     assert_nil I.parse('{"token":"wrong","open":{}}', "right")
     assert_nil I.parse("not json", "right")
@@ -285,5 +343,36 @@ class HitMapTest < Minitest::Test
     assert_nil map.at(x: 50, y: 11)
     assert_equal [0, 0, 100, 10], map.rect([:tab, 0])
     assert_nil map.rect(:missing)
+  end
+end
+
+require "tn3270/gui/dialogs"
+
+# Save never makes a desktop shortcut; one that exists follows a rename and
+# goes with a delete.
+class ShortcutFollowTest < Minitest::Test
+  D = Tn3270::Gui::ConnectionsDialog
+  S = Tn3270::Gui::Shortcut
+
+  def with_fake_shortcuts(existing)
+    log = []
+    saved = %i[remove create path_for].to_h { |m| [m, S.method(m)] }
+    S.define_singleton_method(:path_for) { |c| "#{c['name']}.lnk" }
+    S.define_singleton_method(:remove) { |c| existing.include?(c["name"]) && (log << [:remove, c["name"]]) }
+    S.define_singleton_method(:create) { |c| log << [:create, c["name"]] }
+    yield log
+  ensure
+    saved.each { |m, fn| S.define_singleton_method(m, fn) }
+  end
+
+  def test_a_renamed_session_keeps_its_shortcut_and_a_deleted_one_loses_it
+    before = [{ "name" => "PROD" }, { "name" => "TEST" }, { "name" => "DEV" }]
+    dialog = D.allocate
+    dialog.instance_variable_set(:@list, [{ "name" => "PROD-1" }, { "name" => "DEV" }])
+    dialog.instance_variable_set(:@renamed, { "PROD" => "PROD-1" })
+    with_fake_shortcuts(%w[PROD TEST]) do |log|
+      dialog.send(:update_shortcuts, before)
+      assert_equal [[:remove, "PROD"], [:create, "PROD-1"], [:remove, "TEST"]], log
+    end
   end
 end

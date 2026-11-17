@@ -737,7 +737,7 @@ module Tn3270
 
       # bin/tn3270 --session NAME (or another launch handing over its
       # session) opens that saved session; a name that isn't saved is tried
-      # as host:port. {"host" => "host:port"} opens a host.
+      # as host:port. {"host" => "host:port"} opens a host. Returns the tab.
       def open_request(request)
         if (name = request["session"])
           conn = @config.connections.find { |c| c["name"].to_s.casecmp?(name.strip) }
@@ -755,6 +755,7 @@ module Tn3270
         new_tab unless @tab.idle?
         saved = target.is_a?(Hash) && @config.connections.include?(target)
         saved ? connect_to(target) : @controller.connect(target)
+        @tab # the tab it opened in
       end
 
       # Connects this tab to a saved connection and moves it to the top of the
@@ -770,6 +771,11 @@ module Tn3270
       def keys_dialog
         @keys = KeysDialog.new(@config, on_change: -> { @program.reload_bindings })
         @keys.show
+      end
+
+      def settings_dialog
+        @settings = SettingsDialog.new(@program, self)
+        @settings.show
       end
 
       def font_dialog

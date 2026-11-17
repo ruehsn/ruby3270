@@ -30,8 +30,9 @@ The 3270 protocol itself is handled by **s3270** (`ws3270.exe` on Windows) from 
     there: type, then Enter (Esc cancels; an empty name goes back to the session name)
   - **Tab colors**: give a session a color (red for production, say) and its tabs carry it, with a line
     of the same color along the top of the status bar while that tab is on show. Pick it under Tab color
-    in Session > Connections, or right-click a tab > Tab Color (Session > Tab Color does the same). A saved
-    session keeps its color; a session typed as `host:port` has it for that tab only
+    in Session > Edit Session, or right-click a tab > Tab Color (Session > Tab Color does the same). A saved
+    session keeps its color; a session typed as `host:port` has it for that tab only. The tab on show is
+    outlined in its color, so it stands out among tabs of the same color
   - A **new tab** lists your saved sessions, most recently used first: click one, or press 1-9. At the top, **Duplicate** (or D)
     opens another connection to the session in the tab you opened it from
   - Opening a session (Connections, a desktop shortcut) uses the current tab if it isn't
@@ -71,11 +72,14 @@ The 3270 protocol itself is handled by **s3270** (`ws3270.exe` on Windows) from 
   Copy to copy it, or Paste to Session to type it into the live screen at the cursor
 - **Display font** (View > Font...): pick from the monospaced fonts installed on the PC, with a preview in
   the chosen font; the size always follows the window
-- **Connections** (Session > Connections...): saved hosts with port, TLS, LU name and screen size
-  (24x80, 32x80, 43x80, 27x132, 62x160, or type any Rows and Columns), plus the path to the engine. **Duplicate** copies the
+- **Connections** (Session > Edit Session..., or the new tab page): saved hosts with port, TLS, LU name and screen size
+  (24x80, 32x80, 43x80, 27x132, 62x160, or type any Rows and Columns). **Duplicate** copies the
   connection on show as "Name (2)", "Name (3)"... for a variant of a session
-- **Edit Session** (Session > Edit Session...): the same dialog, open on the current tab's session, to change
+- **Edit Session** (Session > Edit Session...): the connections dialog, open on the current tab's session, to change
   and save it. Connect reconnects the tab with the changes; a typed `host:port` session can be saved this way
+- **Program Settings** (Session > Program Settings...): options for the whole program in one place: the engine
+  path, type-ahead, digits-only fields, Keyboard Mapping, spell check, snippets sidebar and files, and locking the
+  window shape. Check boxes act at once; the engine path is kept by Save
 - **TLS certificates**: by default the host's certificate isn't checked, so self-signed mainframe
   certificates just work. Tick "Verify the host's certificate" on a connection to check it. Unchecked, the
   connection is encrypted but can't tell an impostor from the real host, so turn it on for hosts
@@ -83,9 +87,10 @@ The 3270 protocol itself is handled by **s3270** (`ws3270.exe` on Windows) from 
 - **Startup script** (per connection): a file run in the background each time that connection comes up,
   for example to sign on. Ruby, PowerShell, batch or Python; it's told which session to drive and that
   ruby3270 started it. See [Startup scripts](#startup-scripts)
-- **Desktop shortcuts** (Windows): pressing Save in Session > Connections puts a shortcut with the app icon
-  on your desktop, named after the session. Double-click it to open the emulator already connecting to that
-  session. Renaming or deleting the session removes its old shortcut. Turn off with `desktop_shortcuts: false`
+- **Desktop shortcuts** (Windows): the **Desktop Shortcut** button in Session > Edit Session saves the session
+  and puts a shortcut with the app icon on your desktop, named after it. Double-click it to open the emulator
+  already connecting to that session. Save alone doesn't make one. Renaming the session moves its shortcut
+  to the new name; deleting it removes the shortcut
 - **Copy a region**: drag across the screen to select a block, then Ctrl+C. With nothing selected,
   Ctrl+C copies the whole screen. A plain click moves the cursor. Right-click while something is
   selected copies it, clears the selection and moves the cursor to the pointer
@@ -193,6 +198,8 @@ Full guide, with a reference of every call and recipes for common jobs: [docs/AP
 A script can start its own session, or **attach to the one open in the window** (on by default, port
 3271 for the first session) so you watch it work and the session stays open afterwards. Any program
 on this computer can then drive the session; untick Session > Allow Scripts to Attach to stop that.
+`Session.attach(tab: "Payroll")` attaches to a tab by its name (renamed or not), and
+`Session.open_in_window("host:port")` opens a new tab in the window from code and attaches to it.
 
 ```ruby
 require "tn3270"
@@ -215,6 +222,7 @@ and `raw("AnyS3270Action()")`.
 
 Examples: [examples/common_calls.rb](examples/common_calls.rb) (a tour of the calls, against the fake
 host), [examples/attach_to_session.rb](examples/attach_to_session.rb) (drives the window's session),
+[examples/open_in_window.rb](examples/open_in_window.rb) (opens a new tab in the window from code),
 [examples/login_script.rb](examples/login_script.rb).
 
 ## Snippets
@@ -296,7 +304,7 @@ the next connect.
 
 ## Startup scripts
 
-A connection can run a script each time it comes up: pick it under Session > Connections > Startup
+A connection can run a script each time it comes up: pick it under Session > Edit Session > Startup
 script. It runs in its own process, attached to that tab's session, so you see every step and the window
 stays usable while it works (anything you type goes to the same session). A script may run as long as it likes,
 for example to watch the session. Closing the tab, disconnecting or reconnecting stops it, together with
@@ -343,7 +351,6 @@ Saved in `~/.ruby3270.yml` (`%USERPROFILE%` on Windows). Only the keys you chang
 engine: 'C:\Program Files\wc3270\ws3270.exe'
 font: Consolas
 history_size: 250         # screens kept in the screen history
-desktop_shortcuts: true   # Save in Connections also makes a desktop shortcut
 snippet_files:            # shared snippet files or folders (yours: ~/.ruby3270-snippets.yml)
 - '\\server\team\3270-snippets.yml'
 script_folders:           # folders of scripts listed with the snippets (see Script folders)
@@ -425,7 +432,7 @@ typed into your desktop: see the comments at the top of `script/readme_media/rec
 
 - **Screen size and the real host.** 160 x 62 is not a standard 3270 model. The emulator offers it
   as a dynamic size, and the host's logmode has to accept that. If the host only allows a fixed
-  model, pick 27 x 132 (Model 5) or 24 x 80 for that connection in Session > Connections.
+  model, pick 27 x 132 (Model 5) or 24 x 80 for that connection in Session > Edit Session.
 - **Keyboard layout.** libui reports keys unshifted, so shifted characters use a US layout table
   (`lib/tn3270/gui/keymap.rb`).
 

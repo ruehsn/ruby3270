@@ -222,9 +222,21 @@ module Tn3270
         else
           pt.fill_rect(x + width - 1, y + 7, 1, th - 14, TITLE_MUTED, 0.35) # divider
         end
-        if (tint = TAB_COLORS[tab.color]) # the session's color: a wash, and a bar along the top
-          pt.fill_rect(x, y, width, th, tint, active ? 0.34 : 0.20)
-          pt.fill_rect(x, y, width, 3, tint)
+        if (tint = TAB_COLORS[tab.color])
+          # The session's color. The active tab is lit up: a stronger wash, a
+          # thick bar along the top and colored sides, so it stands out among
+          # tabs of the same color. The others get a faint wash and a thin bar.
+          if active
+            pt.fill_rect(x, y, width, th, tint, 0.30)
+            pt.fill_rect(x, y, width, 4, tint)
+            pt.fill_rect(x, y, 2, th, tint)
+            pt.fill_rect(x + width - 2, y, 2, th, tint)
+          else
+            pt.fill_rect(x, y, width, th, tint, 0.10)
+            pt.fill_rect(x + 6, y + 2, width - 12, 2, tint, 0.55)
+          end
+        elsif active
+          pt.fill_rect(x, y, width, 2, SELECTION) # an uncolored active tab still gets a line on top
         end
         color = { connected: ONLINE, connecting: CONNECTING }[tab.state]
         cy = y + (th / 2.0)
@@ -235,7 +247,7 @@ module Tn3270
           return draw_tab_edit(x + 21, y + 4, [width - 21 - 6, 40].max, th - 8, text_y)
         end
 
-        ui_text(x + 23, text_y, fit_text(tab.title, width - 23 - 26), active ? WHITE : TITLE_FG) if width >= 60
+        ui_text(x + 23, text_y, fit_text(tab.title, width - 23 - 26), active ? WHITE : TITLE_MUTED) if width >= 60
         if (active || hover) && width >= 60
           cx = x + width - 15
           if @tab_hover == [:tab_close, index]

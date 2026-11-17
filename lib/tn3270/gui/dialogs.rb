@@ -24,9 +24,8 @@ module Tn3270
       end
     end
 
-    # Session > Connections...: saved connections (host, port, TLS and
-    # certificate checking, LU, screen size, startup script) plus the path to
-    # the s3270 engine.
+    # Session > Edit Session...: saved connections (host, port, TLS and
+    # certificate checking, LU, screen size, startup script, tab color).
     class ConnectionsDialog
       include DialogSupport
 
@@ -45,6 +44,7 @@ module Tn3270
         @list = [Config::DEFAULT_CONNECTION.dup] if @list.empty?
         @index = select ? index_for(select) : 0
         @opened = select && @index
+        @renamed = {} # old name => new name, for desktop shortcuts
       end
 
       # The connection on show (after Save: as saved).
@@ -84,17 +84,10 @@ module Tn3270
                                        "Ruby (.rb), PowerShell, batch, Python... See examples/startup_script.rb."))
         Ui.add(main, Ui.group("Connection", form))
 
-        engine = Ui.vbox
-        Ui.add(engine, Ui.label("Path to ws3270.exe / s3270. Leave blank to find it automatically.\n" \
-                                "Takes effect after restarting the emulator."))
-        erow = Ui.add(engine, Ui.hbox)
-        @engine = Ui.add(erow, Ui.entry(@config["engine"]), stretchy: true)
-        Ui.add(erow, Ui.button("Browse...") { browse_engine })
-        Ui.add(main, Ui.group("Emulator engine", engine))
-
         @error = Ui.add(main, Ui.label(""))
         buttons = Ui.add(main, Ui.hbox)
         Ui.add(buttons, Ui.label(""), stretchy: true)
+        Ui.add(buttons, Ui.button("Desktop Shortcut") { make_shortcut }) if Win32.available?
         Ui.add(buttons, Ui.button("Save") { save })
         Ui.add(buttons, Ui.button("Connect") { connect })
         Ui.add(buttons, Ui.button("Close") { close_window(@win) })
@@ -125,11 +118,6 @@ module Tn3270
       def browse_script
         path = Ui.open_file(@win)
         UI.entry_set_text(@script, path) if path
-      end
-
-      def browse_engine
-        path = Ui.open_file(@win)
-        UI.entry_set_text(@engine, path) if path
       end
 
       def pick(index)
@@ -226,12 +214,15 @@ module Tn3270
       end
 
       def read_form
+        was = @list[@index]["name"].to_s
         @list[@index] = {
           "name" => Ui.entry_text(@name).strip, "host" => Ui.entry_text(@host).strip,
           "port" => UI.spinbox_value(@port), "tls" => Ui.checked?(@tls), "verify_cert" => Ui.checked?(@verify),
           "lu" => Ui.entry_text(@lu).strip, "rows" => UI.spinbox_value(@rows), "cols" => UI.spinbox_value(@cols),
           "script" => Ui.entry_text(@script).strip, "color" => COLORS[UI.combobox_selected(@color)].to_s
         }
+        now = @list[@index]["name"]
+        @renamed[was] = now unless was.empty? || was == now
       end
 
       # Returns an error message or nil.
@@ -245,25 +236,35 @@ module Tn3270
         nil
       end
 
-      # Saves the list. With shortcut: also writes that connection's desktop
-      # shortcut; returns its path (or nil).
-      def persist(shortcut: nil)
+      # Saves the list. Desktop shortcuts are only made by the Desktop
+      # Shortcut button, but one that exists follows its session: a deleted
+      # session's goes, a renamed session's is remade under the new name.
+      def persist
         before = config.connections
         config["connections"] = @list
-        engine = Ui.entry_text(@engine).strip
-        config["engine"] = engine.empty? ? nil : engine
         config.save
         @on_save&.call
-        update_shortcuts(before, shortcut)
+        update_shortcuts(before)
       end
 
-      # Removes shortcuts of renamed or deleted connections, then makes this one's.
-      def update_shortcuts(before, conn)
-        return nil unless config["desktop_shortcuts"]
-
+      def update_shortcuts(before)
         kept = @list.map { |c| Shortcut.path_for(c) }
-        before.each { |c| Shortcut.remove(c) unless kept.include?(Shortcut.path_for(c)) }
-        conn && Shortcut.create(conn)
+        before.each do |c|
+          next if kept.include?(Shortcut.path_for(c))
+          next unless Shortcut.remove(c) # it had a shortcut (one this app made)
+
+          (now = renamed_to(c["name"])) && Shortcut.create(now)
+        end
+      end
+
+      # The connection now called what `name` was renamed to, or nil.
+      def renamed_to(name)
+        seen = []
+        while (n = @renamed[name]) && !seen.include?(n)
+          seen << n
+          name = n
+        end
+        seen.empty? ? nil : @list.find { |c| c["name"] == name }
       end
 
       def save
@@ -273,9 +274,18 @@ module Tn3270
           return false
         end
         refresh_combo
-        link = persist(shortcut: @list[@index])
-        UI.label_set_text(@error, link ? "Saved. Desktop shortcut: #{File.basename(link)}" : "Saved.")
+        persist
+        UI.label_set_text(@error, "Saved.")
         true
+      end
+
+      # The Desktop Shortcut button: saves, then puts a shortcut to this
+      # session on the desktop (double-click it to open ruby3270 on it).
+      def make_shortcut
+        return unless save
+
+        link = Shortcut.create(@list[@index])
+        UI.label_set_text(@error, link ? "Saved. Desktop shortcut: #{File.basename(link)}" : "Saved, but the shortcut couldn't be made.")
       end
 
       def connect
@@ -283,6 +293,91 @@ module Tn3270
 
         @on_connect.call(@list[@index])
         close_window(@win)
+      end
+    end
+
+    # Session > Program Settings...: options for the whole program rather
+    # than one session: the engine, keyboard, spelling, snippets, window shape.
+    # Check boxes act at once (through the same switches as the menus); the
+    # engine path is kept by Save.
+    class SettingsDialog
+      include DialogSupport
+
+      # program: the Program (its `flip` keeps the menu ticks in step);
+      # window: the TerminalWindow the dialog was opened from.
+      def initialize(program, window)
+        @program = program
+        @window = window
+        @config = program.config
+      end
+
+      def show
+        @win = Ui.window("Program Settings", 560, 470)
+        UI.window_on_closing(@win) { 1 }
+        main = Ui.vbox
+
+        engine = Ui.vbox
+        Ui.add(engine, Ui.label("Path to ws3270.exe / s3270. Leave blank to find it automatically.\n" \
+                                "Takes effect after restarting the emulator."))
+        row = Ui.add(engine, Ui.hbox)
+        @engine = Ui.add(row, Ui.entry(@config["engine"]), stretchy: true)
+        Ui.add(row, Ui.button("Browse...") { browse_engine })
+        Ui.add(main, Ui.group("Emulator engine", engine))
+
+        keys = Ui.vbox
+        toggle(keys, "Type-ahead (queue keys while the host is busy)", :typeahead, "typeahead")
+        toggle(keys, "Numeric fields: digits only", :numeric_lock, "numeric_lock")
+        Ui.add(keys, Ui.button("Keyboard Mapping...") { @window.command(:keys_dialog) })
+        Ui.add(main, Ui.group("Keyboard", keys))
+
+        if Win32.available?
+          spelling = Ui.vbox
+          toggle(spelling, "Spell check (long input fields)", :spell_check, "spell_check")
+          srow = Ui.add(spelling, Ui.hbox)
+          Ui.add(srow, Ui.button("Language...") { @window.command(:choose_spell_language) })
+          Ui.add(srow, Ui.button("Edit My Spelling Words...") { @window.command(:edit_spell_words) })
+          Ui.add(main, Ui.group("Spelling", spelling))
+        end
+
+        snippets = Ui.vbox
+        toggle(snippets, "Show the snippets sidebar", :snippet_bar, "snippet_bar")
+        nrow = Ui.add(snippets, Ui.hbox)
+        Ui.add(nrow, Ui.button("Snippet Files...") { @window.command(:snippet_files_dialog) })
+        Ui.add(nrow, Ui.button("Quick Pick...") { @window.command(:open_picker) })
+        Ui.add(main, Ui.group("Snippets", snippets))
+
+        if Win32.available?
+          shape = Ui.vbox
+          toggle(shape, "Lock the window shape to the screen", :lock_ratio, "lock_ratio")
+          Ui.add(main, Ui.group("Window", shape))
+        end
+
+        @note = Ui.add(main, Ui.label(""))
+        buttons = Ui.add(main, Ui.hbox)
+        Ui.add(buttons, Ui.label(""), stretchy: true)
+        Ui.add(buttons, Ui.button("Save") { save })
+        Ui.add(buttons, Ui.button("Close") { close_window(@win) })
+        UI.window_set_child(@win, main)
+        show_window(@win)
+      end
+
+      private
+
+      # A check box for the setting `key`; clicking it flips the setting like its menu item.
+      def toggle(box, text, name, key)
+        Ui.add(box, Ui.checkbox(text, checked: @config[key]) { @program.flip(name, @window) })
+      end
+
+      def browse_engine
+        path = Ui.open_file(@win)
+        UI.entry_set_text(@engine, path) if path
+      end
+
+      def save
+        engine = Ui.entry_text(@engine).strip
+        @config["engine"] = engine.empty? ? nil : engine
+        @config.save
+        UI.label_set_text(@note, "Saved.")
       end
     end
 
