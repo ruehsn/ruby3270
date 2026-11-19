@@ -93,7 +93,8 @@ The 3270 protocol itself is handled by **s3270** (`ws3270.exe` on Windows) from 
   to the new name; deleting it removes the shortcut
 - **Copy a region**: drag across the screen to select a block, then Ctrl+C. With nothing selected,
   Ctrl+C copies the whole screen. A plain click moves the cursor. Right-click while something is
-  selected copies it, clears the selection and moves the cursor to the pointer
+  selected copies it, clears the selection and moves the cursor to the pointer; with nothing
+  selected it pastes at the cursor (like Ctrl+V)
 - **Type-ahead**: keys typed while the host is still answering (status bar shows X SYSTEM and
   TYPE-AHEAD n) are queued and sent in order once it answers
 - **Esc unlocks**: while the keyboard is locked (X SYSTEM, or X -f after typing where you can't), Esc is

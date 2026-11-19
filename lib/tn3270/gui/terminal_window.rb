@@ -442,14 +442,15 @@ module Tn3270
 
       # Right-click with a selection: copy it, clear it, and put the cursor
       # where the pointer is. Without a selection, on a misspelled word: its
-      # suggestions menu. Otherwise nothing happens.
+      # suggestions menu. Otherwise: paste at the cursor, like Ctrl+V.
       def right_click(event)
         if (hit = tab_hit(event)) && hit[0] != :new_tab
           tab = @tabs[hit[1]]
           return UI.queue_main { tab_menu(tab) }
         end
         return unless @controller.snapshot
-        return spell_click(event) unless @selection
+        return if !@selection && spell_click(event)
+        return paste unless @selection
 
         copy
         cell = cell_at(event)

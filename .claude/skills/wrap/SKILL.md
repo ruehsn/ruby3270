@@ -54,23 +54,32 @@ create the index if it's missing).
   copy of `script/demo_home` as HOME, look at the frames before committing,
   and make sure the README links `docs/images/*`.
 
-## 4. Check
+## 4. Bump the release number
+
+- Increase the last number of `VERSION` in `lib/tn3270.rb` by one
+  (`0.1.0` becomes `0.1.1`). Help > About shows this number, and scripts
+  get it in `RUBY3270_VERSION`. Bump it once per wrap, even if
+  several features went in. Change the first or middle number only when the
+  user asks.
+- Put the new number in the decisions doc's Summary ("Release 0.1.1.").
+
+## 5. Check
 
 - `bundle exec rake test` (or `ruby -Ilib -Itest -e 'Dir["test/*_test.rb"].each { |f| require "./#{f}" }'`).
   Don't commit if a test fails; report it.
 
-## 5. Commit and push
+## 6. Commit and push
 
 - If on `main`, commit there (this repo is single-developer); otherwise commit on the current branch.
 - Stage the files by name. Don't add scratch files, logs, `script/demo_home`
   config written back by a demo run, or anything that looks like a secret
   (hostnames, user IDs, passwords).
-- Commit message: a short summary line, a blank line, then a bullet per
-  feature. End it with the co-author line the session asks for.
+- Commit message: a short summary line ending with the release number in
+  brackets, e.g. `... [0.1.1]`, a blank line, then a bullet per feature. End it with the co-author line the session asks for.
 - `git push origin <branch>`. If the push is rejected, stop and tell the
   user. Don't pull or rebase without asking.
 
-## 6. Report
+## 7. Report
 
 Tell the user in a few lines: the doc's path, what the README gained, the
-commit hash and that it's pushed.
+new release number, the commit hash and that it's pushed.

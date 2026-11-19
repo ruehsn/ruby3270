@@ -211,7 +211,7 @@ module Tn3270
 
           format("%-30s %s", keys.join(", "), label)
         end.join("\n") + "\n#{format('%-30s %s', 'Click / drag', 'Move cursor / select text')}" \
-                         "\n#{format('%-30s %s', 'Right-click', 'Copy the selection; on a red-underlined word, spelling suggestions')}"
+                         "\n#{format('%-30s %s', 'Right-click', 'Copy the selection; nothing selected: paste; on a red-underlined word, spelling suggestions')}"
       end
     end
   end

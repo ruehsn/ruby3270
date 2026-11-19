@@ -439,17 +439,23 @@ module Tn3270
       def build_menus
         c = @config
         m = UI.new_menu("Session")
+        # Opening things
         item(m, "New Tab", :new_tab)
         item(m, "New Window", shortcut: "new_window") { new_window }
         item(m, "Duplicate Tab", :duplicate_tab)
+        UI.menu_append_separator(m)
+        # This tab
         item(m, "Rename Tab", :rename_tab)
         item(m, "Tab Color...", :choose_tab_color) if Win32.available?
-        item(m, "Edit Session...", :edit_session)
-        item(m, "Program Settings...", :settings_dialog)
-        item(m, "Close Tab", :close_tab)
         item(m, "Move Tab to New Window", :tab_to_new_window)
+        item(m, "Close Tab", :close_tab)
         UI.menu_append_separator(m)
+        # This tab's connection
         item(m, "Connect / Disconnect", :toggle_connection)
+        item(m, "Edit Session...", :edit_session)
+        UI.menu_append_separator(m)
+        # The whole program
+        item(m, "Program Settings...", :settings_dialog)
         check_item(m, "Allow Scripts to Attach", c["allow_attach"], words: "scripting port attach api") do |_w, on|
           c["allow_attach"] = on
           c.save
