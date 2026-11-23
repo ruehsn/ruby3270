@@ -204,6 +204,33 @@ module Tn3270
         nil
       end
 
+      # Gives a text control (an entry, a multi-line entry) a monospaced font,
+      # so screen text lines up in columns.
+      WM_SETFONT = 0x30
+      def monospace(control, points: 10)
+        return unless available?
+
+        dpi = fn("GetDpiForWindow", [P]).call(hwnd(control))
+        height = -((points * (dpi.positive? ? dpi : 96)) / 72.0).round
+        @mono_fonts ||= {}
+        font = @mono_fonts[height] ||= Fiddle::Function.new(Fiddle.dlopen("gdi32")["CreateFontW"], [I] * 13 + [P], P)
+                                                     .call(height, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 49, wide("Consolas"))
+        fn("SendMessageW", [P, I, U, P], Fiddle::TYPE_INTPTR_T).call(hwnd(control), WM_SETFONT, font.to_i, Fiddle::Pointer.new(1))
+      rescue StandardError
+        nil
+      end
+
+      # Makes `owner` own `window`: it stays in front of its owner and
+      # minimizes with it, but doesn't block it (not modal).
+      GWLP_HWNDPARENT = -8
+      def set_owner(window, owner)
+        return unless available?
+
+        fn("SetWindowLongPtrW", [P, I, P], P).call(hwnd(window), GWLP_HWNDPARENT, hwnd(owner))
+      rescue StandardError
+        nil
+      end
+
       # Brings a window to the front.
       def focus(window)
         return unless available?

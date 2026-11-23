@@ -447,6 +447,21 @@ sleep 30
     wait_until { !@c.startup_script_running? }
   end
 
+  # Stop Script ends a script the tab started; the status bar says so, not "failed".
+  def test_stop_scripts_ends_a_running_script
+    conn = script_conn("forever.rb", "wait_for_text('USER ID')
+status 'working'
+loop { sleep 1 }
+")
+    @c.connect(conn)
+    wait_until(15) { @c.message == "working" }
+    assert @c.scripts_running?
+    @c.stop_scripts
+    wait_until { !@c.scripts_running? }
+    sleep 0.5 # its exit is reported after the stop
+    assert_equal "Script stopped", @c.message
+  end
+
   def test_startup_script_error_shows_in_status_bar
     conn = script_conn("bad.rb", "wait_for_text('USER ID')
 no_such_method_here

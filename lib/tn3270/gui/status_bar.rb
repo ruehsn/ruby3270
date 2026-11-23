@@ -75,6 +75,7 @@ module Tn3270
         rx = draw_toggle(:fk, "FK", keybar_shown?, rx - cw, y, cw, size, font, text_y)
         rx = draw_toggle(:auto_enter, "ENTER", @controller.auto_enter?, rx - cw, y, cw, size, font, text_y)
         rx = draw_toggle(:snip, "SNIP", snippet_bar_shown?, rx - cw, y, cw, size, font, text_y)
+        rx = draw_toggle(:stop, "STOP", true, rx - cw, y, cw, size, font, text_y) if script_busy?
 
         max_chars = [((rx - x) / cw).floor - 1, 0].max
         line = (left.ljust(24) + mid)[0, max_chars]
@@ -203,6 +204,10 @@ module Tn3270
           ["FK: function key buttons",
            "Shows a bar of buttons: PF1-PF24, Reset, Clear, Attn, New Line and SysReq.",
            "Click to #{keybar_shown? ? 'hide' : 'show'} it."]
+        when :stop
+          ["STOP: stop the script",
+           "A script is running on this tab, or waiting for your answer.",
+           "Click to stop it (#{keys_label('stop_script')}; also Session > Stop Scripts)."]
         when :connection
           connection_tip
         when :position

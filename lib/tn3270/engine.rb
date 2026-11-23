@@ -23,6 +23,11 @@ module Tn3270
 
   class TimeoutError < Error; end
 
+  # The person at ruby3270 pressed Stop Script while the script was asking
+  # them something (Session#ask, #choose, #show with wait: true). Let it
+  # end the script; rescue it only to tidy up.
+  class ScriptStopped < Error; end
+
   # Status line s3270 prints after every action.
   Status = Struct.new(:keyboard, :formatted, :protected_field, :connection, :mode,
                       :model, :rows, :cols, :cursor_row, :cursor_col, :raw, keyword_init: true) do

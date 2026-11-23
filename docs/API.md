@@ -15,7 +15,8 @@ To try anything here without a mainframe, run `ruby bin/fake_host` and connect t
 
 - [Ways in](#two-ways-in): start a hidden session, attach to the one in the window, or open a new tab in the window
 - [A complete script](#a-complete-script)
-- [Reference](#reference): connecting, typing, keys, waiting, reading, everyday helpers
+- [Reference](#reference): connecting, typing, keys, waiting, reading, everyday helpers,
+  [asking the person at the window](#asking-the-person-at-the-window)
 - [Recipes](#recipes): common jobs, step by step
 - [Startup scripts](#startup-scripts), [errors](#errors), [raw actions](#anything-else), [testing](#testing-scripts)
 
@@ -230,6 +231,49 @@ Short-cuts for the steps nearly every script has.
 | `type_snippet("=3.4{Enter}{wait:DSLIST}", answers: { ... })` | Types a [snippet](../README.md#snippets): text with `{Enter}`, `{PF3}`, `{wait:TEXT}`, `{ask:Question}` (answered from `answers:`), `{date}`, `{user}`... |
 | `page_until("MY.DATASET", key: :pf8, max_pages: 50)` | Pages forward until the text shows up. Stops at the end of the list (a page that doesn't change). Returns true if found. |
 
+### Asking the person at the window
+
+A script can ask for a value, offer a choice, or show some text. Each opens a small window of its
+own over the session's ruby3270 window, so the typing never lands in the 3270 screen and the
+terminal's keyboard is left alone. `show` doesn't even take the keyboard: you can keep typing in
+the terminal while its window is up.
+
+| Call | Does |
+| --- | --- |
+| `ask("Job name?", default: "", title: nil, secret: false)` | A line of text from the person, or `nil` if they press Cancel. `secret: true` hides what's typed (for a password). |
+| `choose("Which system?", %w[PROD TEST DEV], default: "TEST", title: nil)` | One of the options, exactly as given, or `nil` for Cancel. Up to 15 options show as a drop-down list; more as a list to scroll (double-click picks). |
+| `show(text, title: "Script", wait: false)` | Shows text, read-only, in a window with **Copy All**, in a monospaced font so screen text keeps its columns. Showing again with the same title updates that window, so a long job can show its progress there. `wait: true` waits until it's closed. |
+| `notify("Job submitted")` | A short message in the tab's status bar. |
+
+```ruby
+Tn3270::Session.attach do |s|
+  job = s.ask("Job name?", default: "USER01A") or exit     # nil: Cancel
+  lpar = s.choose("Which system?", %w[PROD TEST], default: "TEST") or exit
+  s.submit("COMMAND ===>", "SUBMIT '#{lpar}.JCL(#{job})'", wait_for: "SUBMITTED")
+  s.show(s.text, title: "After submit")
+end
+```
+
+Each call waits as long as the person takes. Every question window has a **Stop Script** button:
+it makes the call raise `Tn3270::ScriptStopped`, which ends the script (rescue it only to tidy up).
+
+**Stopping a script.** While a script that the tab started (a startup script or one from a script
+folder) is running, or any script is waiting for an answer, the status bar shows a **STOP** button.
+It, **Session > Stop Scripts** and the `stop_script` key (unbound at first; set one in Keys >
+Keyboard Mapping) end the scripts that tab started, together with anything they started, and answer
+any open question with Stop Script. A script you started yourself (from a command prompt, say) can't
+be ended from the window while it's busy with the screen, only at its next question; stop it where
+you started it (Ctrl+C).
+
+These calls go to the running ruby3270 the same way `open_in_window` does: they need ruby3270
+running with **single_instance** on (the default), from the same computer and user, and raise
+`Tn3270::Error` otherwise. An attached session asks over its own tab's window; a session that
+isn't attached (`Session.open`) uses the window in front. In startup scripts and script-folder
+scripts they can be called directly (`ask("Job name?")`), like the other session methods. They're
+Ruby only; scripts in other languages can't ask yet.
+
+See [examples/ask_the_user.rb](../examples/ask_the_user.rb).
+
 ## Recipes
 
 ### Sign on and check it worked
@@ -324,6 +368,7 @@ logon(ENV.fetch("TN3270_USER"), ENV["TSO_PW"], wait_for: "READY")
 status "Signed on to #{connection['name']}"   # a message in the status bar
 ```
 
+`ask`, `choose`, `show` and `notify` work too ([Asking the person at the window](#asking-the-person-at-the-window)).
 `session` is the attached session, `connection` is the saved connection (a Hash: `"name"`,
 `"host"`, `"port"`...), `emulator` is `"ruby3270"` and `session_name` the session's name. Lines
 the script prints show in the status bar. If the script fails, the status bar shows the error and
@@ -340,6 +385,8 @@ All errors inherit from `Tn3270::Error`:
   `e.detail` is the engine's reason and `e.action` the action it refused. The message is
   `"action: detail"`, except that typed text is left out (`String(...): Keyboard locked`), so a
   password never ends up in a status bar or a log; `e.action` still has it.
+- `Tn3270::ScriptStopped`: the person pressed Stop Script while the script was asking them
+  something ([above](#asking-the-person-at-the-window)).
 - `Tn3270::Error`: the engine couldn't start or stopped, or there was nothing to attach to.
 
 ## Anything else

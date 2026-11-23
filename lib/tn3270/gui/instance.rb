@@ -17,9 +17,15 @@ module Tn3270
     #
     # The token is only readable by the user, so other users on the same
     # computer (a terminal server) can't open sessions in someone else's app.
+    #
+    # Scripts use the same line to talk to the person at the window
+    # (Session#ask, #choose, #show, #notify): see `user_request`.
     class Instance
       FILE = File.join(Dir.home, ".ruby3270.instance")
       MAX_LINE = 4096
+      MAX_UI_LINE = 300_000 # a script's request to the user (show can carry a long text)
+      MAX_TEXT = 200_000
+      UI_KINDS = %w[ask choose show notify].freeze
       REPLY_WAIT = 14 # seconds the app has to open a tab and say which port it has
       FIELDS = %w[session host tab want].freeze # tab: find an open tab by name; want: "port" asks for its script port
 
@@ -77,16 +83,60 @@ module Tn3270
         nil
       end
 
+      # Sends a script's request to the person at the window (`ui`: a Hash
+      # with "kind" ask / choose / show / notify, see parse_ui) and waits,
+      # however long they take, for the answer: {"value" => ...},
+      # {"cancel" => true}, {"stop" => true} or {"ok" => true}. Raises
+      # Tn3270::Error if ruby3270 isn't running.
+      def self.user_request(ui, path: FILE)
+        info = JSON.parse(File.read(path))
+        port = info["port"].to_i
+        token = info["token"].to_s
+        raise Tn3270::Error, "ruby3270 isn't running" unless port.positive? && !token.empty?
+
+        Socket.tcp("127.0.0.1", port, connect_timeout: 1.5) do |sock|
+          sock.write("#{JSON.generate('token' => token, 'ui' => ui)}\n")
+          reply = JSON.parse(sock.gets.to_s)
+          reply.is_a?(Hash) ? reply : raise(Tn3270::Error, "ruby3270 didn't answer")
+        end
+      rescue Errno::ENOENT, Errno::ECONNREFUSED, SocketError, Errno::ETIMEDOUT
+        raise Tn3270::Error, "ruby3270 isn't running (start it first; Config single_instance must be on)"
+      rescue JSON::ParserError, IOError, SystemCallError
+        raise Tn3270::Error, "ruby3270 didn't answer"
+      end
+
       # The request in a line from another copy, or nil if the token is wrong
       # or the line isn't one. Only known fields, as short strings, are kept.
       def self.parse(line, token)
         data = JSON.parse(line.to_s)
-        return nil unless data.is_a?(Hash) && data["token"].is_a?(String) && data["open"].is_a?(Hash)
-        return nil unless data["token"].bytesize == token.bytesize && secure_equal?(data["token"], token)
+        return nil unless data.is_a?(Hash) && token_ok?(data["token"], token) && data["open"].is_a?(Hash)
 
         data["open"].slice(*FIELDS).select { |_, v| v.is_a?(String) && !v.strip.empty? && v.size <= 200 }
       rescue JSON::ParserError
         nil
+      end
+
+      # A script's request to the user in a line, or nil (wrong token, not
+      # one). Only known fields are kept, each cut to a sensible size.
+      def self.parse_ui(line, token)
+        data = JSON.parse(line.to_s)
+        return nil unless data.is_a?(Hash) && token_ok?(data["token"], token) && data["ui"].is_a?(Hash)
+
+        ui = data["ui"]
+        return nil unless UI_KINDS.include?(ui["kind"])
+
+        text = ->(key, max) { ui[key].is_a?(String) ? ui[key][0, max] : nil }
+        options = ui["options"].is_a?(Array) ? ui["options"].grep(String).first(500).map { |o| o[0, 200] } : []
+        { "kind" => ui["kind"], "title" => text.("title", 200), "prompt" => text.("prompt", 2000),
+          "default" => text.("default", 2000), "text" => text.("text", MAX_TEXT), "options" => options,
+          "secret" => ui["secret"] == true, "wait" => ui["wait"] == true,
+          "port" => (ui["port"] if ui["port"].is_a?(Integer)) }.compact
+      rescue JSON::ParserError
+        nil
+      end
+
+      def self.token_ok?(given, token)
+        given.is_a?(String) && given.bytesize == token.bytesize && secure_equal?(given, token)
       end
 
       def self.secure_equal?(a, b)
@@ -137,7 +187,11 @@ module Tn3270
       # want=port is handed over with a reply queue, and answered
       # "ok <port>" when the app has the tab (or "no" if it has no port).
       def answer(client)
-        request = client.wait_readable(2) && self.class.parse(client.gets("\n", MAX_LINE), @token)
+        line = client.wait_readable(2) && client.gets("\n", MAX_UI_LINE)
+        ui = self.class.parse_ui(line, @token)
+        return answer_user_request(client, ui) if ui
+
+        request = line && line.bytesize <= MAX_LINE && self.class.parse(line, @token)
         return client.write("no\n") unless request
 
         if request.delete("want") == "port"
@@ -153,6 +207,33 @@ module Tn3270
         nil
       ensure
         client.close
+      end
+
+      # A script asks the user something. The app gets {"ui", "id", "reply"};
+      # the answer can take as long as the person likes. If the script goes
+      # away first (stopped, killed), the app hears {"ui_gone" => id} so it
+      # can close the question.
+      def answer_user_request(client, ui)
+        reply = Queue.new
+        id = SecureRandom.hex(6)
+        @requests << { "ui" => ui, "id" => id, "reply" => reply }
+        loop do
+          answer = reply.pop(timeout: 0.5)
+          return client.write("#{JSON.generate(answer)}\n") if answer
+          next unless gone?(client)
+
+          @requests << { "ui_gone" => id }
+          return
+        end
+      end
+
+      # True once the other end has closed the connection.
+      def gone?(client)
+        return false unless client.wait_readable(0)
+
+        client.read_nonblock(1, exception: false).nil?
+      rescue IOError, SystemCallError
+        true
       end
     end
   end

@@ -55,6 +55,7 @@ module Tn3270
     def self.attach(port: 3271, host: "127.0.0.1", timeout: 10, tab: nil)
       port = port_of_tab(tab) if tab
       session = new(engine: Engine.attach(port: port, host: host), timeout: timeout)
+      session.window_port = port # so questions to the user open over this tab
       return session unless block_given?
 
       begin
@@ -118,6 +119,10 @@ module Tn3270
       @timeout = timeout
       @engine = engine || Engine.new(rows: rows, cols: cols, **engine_opts)
     end
+
+    # The script port of the ruby3270 tab this session is attached to: ask,
+    # choose, show and notify go to that tab's window. nil: the window in front.
+    attr_accessor :window_port
 
     # True for a session joined with Session.attach.
     def attached? = @engine.attached?
@@ -355,7 +360,54 @@ module Tn3270
       Snippet.run(self, text, answers: answers, vars: vars, wait_timeout: wait_timeout)
     end
 
+    # ---- talking to the person at ruby3270 --------------------------------
+    # These open their own small windows over the session's ruby3270 window
+    # (the one in front for a session that isn't attached), so nothing goes
+    # into the 3270 screen and the 3270 keyboard is never touched. They need
+    # ruby3270 running with single_instance on. Each waits as long as the
+    # person takes. Cancel gives nil; Stop Script raises Tn3270::ScriptStopped.
+
+    # A line of text from the user, or nil if they cancel.
+    #   job = s.ask("Job name?", default: "USER01A")
+    # secret: true hides what's typed (for a password).
+    def ask(prompt, default: "", title: nil, secret: false)
+      user_request("kind" => "ask", "prompt" => prompt.to_s, "default" => default.to_s,
+                   "title" => title&.to_s, "secret" => secret)["value"]
+    end
+
+    # One of `options` (strings), as the user picked it, or nil if they cancel.
+    #   lpar = s.choose("Which system?", %w[PROD TEST DEV], default: "TEST")
+    def choose(prompt, options, default: nil, title: nil)
+      list = options.map(&:to_s)
+      raise ArgumentError, "choose needs at least one option" if list.empty?
+
+      answer = user_request("kind" => "choose", "prompt" => prompt.to_s, "options" => list,
+                            "default" => default&.to_s, "title" => title&.to_s)["value"]
+      list.include?(answer) ? answer : nil
+    end
+
+    # Shows text in a window of its own (read-only; it can be copied from).
+    # Showing again with the same title replaces the text in that window,
+    # so it can show progress. wait: true waits until the user closes it.
+    #   s.show(report_lines.join("\n"), title: "Data sets")
+    def show(text, title: "Script", wait: false)
+      tap { user_request("kind" => "show", "text" => text.to_s, "title" => title.to_s, "wait" => wait) }
+    end
+
+    # A short message in the tab's status bar.
+    def notify(text)
+      tap { user_request("kind" => "notify", "text" => text.to_s.lines.first.to_s.chomp) }
+    end
+
     private
+
+    def user_request(ui)
+      require_relative "gui/instance"
+      reply = Gui::Instance.user_request(ui.merge("port" => window_port).compact)
+      raise ScriptStopped, "Stopped by the user" if reply["stop"]
+
+      reply
+    end
 
     # Looks every 0.1 seconds until the block is true; TimeoutError after `timeout`.
     def poll(timeout, what)

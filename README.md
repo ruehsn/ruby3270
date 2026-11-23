@@ -128,6 +128,12 @@ The 3270 protocol itself is handled by **s3270** (`ws3270.exe` on Windows) from 
 - **Script folders** (Snippets sidebar > Files > Add Script Folder...): the scripts in a folder (.rb, .ps1,
   .bat, .py...) show in the snippet list with the name and description from their top comments, and
   double-clicking one runs it in the background on the session. See [Script folders](#script-folders)
+- **Scripts that ask** (Ruby scripts): `ask`, `choose`, `show` and `notify` let a script ask you for a value,
+  offer a list to pick from, or show a report, each in a small window of its own, so nothing goes into the
+  3270 screen. See [Asking the person at the window](docs/API.md#asking-the-person-at-the-window) and
+  [examples/ask_the_user.rb](examples/ask_the_user.rb)
+- **Stop a script**: while a script runs on a tab (or waits for an answer) the status bar shows **STOP**; click
+  it, or use Session > Stop Scripts, to end it and anything it started
 - **Quick picker finds settings too** (Ctrl+Space): type `caps`, `auto enter`, `underline`, `key bar`...
   and Enter switches that option on or off, just like its menu item
 - **Export / Import Settings** (Session menu): your sessions, snippets and options in one file, to move to
@@ -225,7 +231,7 @@ and `raw("AnyS3270Action()")`.
 Examples: [examples/common_calls.rb](examples/common_calls.rb) (a tour of the calls, against the fake
 host), [examples/attach_to_session.rb](examples/attach_to_session.rb) (drives the window's session),
 [examples/open_in_window.rb](examples/open_in_window.rb) (opens a new tab in the window from code),
-[examples/login_script.rb](examples/login_script.rb).
+[examples/login_script.rb](examples/login_script.rb), [examples/ask_the_user.rb](examples/ask_the_user.rb) (asks you things in small windows of its own).
 
 ## Snippets
 
@@ -327,7 +333,9 @@ status "Signed on to #{connection['name']}"   # shown in the status bar
 ```
 
 If the script fails, the status bar shows the error and its line number. Each line a script prints shows
-in the status bar too.
+in the status bar too. A script can also ask you things (`ask`, `choose`, `show`: see
+[docs/API.md](docs/API.md#asking-the-person-at-the-window)), and the status bar's **STOP** button (or Session >
+Stop Scripts) ends it.
 
 Other kinds of file work as well: `.ps1`, `.bat`/`.cmd`, `.py`, `.vbs`/`.js`, or any program. Every script
 gets environment variables saying who started it and which session to drive, so one script shared by

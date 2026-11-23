@@ -31,6 +31,20 @@ module Tn3270
       # True while this tab's startup script is still running.
       def startup_script_running? = @startup_script&.alive? || false
 
+      # True while any script this tab started (startup or script folder) runs.
+      def scripts_running? = startup_script_running? || (@scripts || []).any?(&:alive?)
+
+      # Stop Script: ends the scripts this tab started, and what they started.
+      def stop_scripts
+        enqueue do
+          if scripts_running?
+            stop_startup_script
+            @message = "Script stopped"
+          end
+          notify
+        end
+      end
+
       private
 
       # Starts the startup script once the connection is up (checked on every poll).
@@ -56,12 +70,14 @@ module Tn3270
           @message = text
           notify
         end
+        run = nil
         on_exit = lambda do |error|
+          error = nil if run&.stopped? # Stop Script: "Script stopped" stays
           error = reword.call(error) if error && reword
           @message = error || (@message == running ? nil : @message) # a quiet script leaves no message
           notify
         end
-        StartupScript.start(path, conn, @attach_port, on_status: on_status, on_exit: on_exit)
+        run = StartupScript.start(path, conn, @attach_port, on_status: on_status, on_exit: on_exit)
       end
 
       def stop_startup_script

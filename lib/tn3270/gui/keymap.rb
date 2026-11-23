@@ -61,6 +61,7 @@ module Tn3270
         "audit_save" => "Save the window as a PNG file, date and time in the status bar",
         "undo" => "Undo (the last paste, snippet or typing)",
         "history" => "Screen history window",
+        "stop_script" => "Stop the scripts running on this tab",
         "find" => "Find on screen / in history",
         "crosshair" => "Crosshair on/off",
         "caps" => "Caps Lock (this app only) on/off",
@@ -196,6 +197,7 @@ module Tn3270
         when "snippet_picker" then [:snippet_picker]
         when "snippet_bar" then [:snippet_bar]
         when "spell_next" then [:spell_next]
+        when "stop_script" then [:stop_scripts]
         when "new_tab", "close_tab", "new_window", "next_tab", "prev_tab", "paste_rest", "audit_copy", "audit_save"
           [action.to_sym]
         when /\Asnippet(\d)\z/ then [:snippet, Regexp.last_match(1).to_i]

@@ -71,6 +71,9 @@ module Tn3270
         def self.run(path, session, connection)
           new(session, connection).instance_eval(File.read(path, encoding: "UTF-8"), path, 1)
           true
+        rescue Tn3270::ScriptStopped
+          $stdout.puts("Script stopped")
+          true
         rescue StandardError, ScriptError => e
           where = e.backtrace_locations&.find { |l| l.path == path }
           warn "#{FAILED}#{where ? " (line #{where.lineno})" : ''}: #{e.message.lines.first.to_s.chomp}"
@@ -123,7 +126,12 @@ module Tn3270
       Running = Struct.new(:wait, :job) do
         def alive? = wait.alive?
         def pid = wait.pid
-        def stop = job.stop
+        def stopped? = @stopped || false
+
+        def stop
+          @stopped = true
+          job.stop
+        end
       end
 
       # Starts the script in its own process and returns at once. Lines it

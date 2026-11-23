@@ -91,6 +91,18 @@ module Tn3270
       def command(name, *args) = send(name, *args)
 
       def ui_window = @window
+      def current_tab = @tab
+
+      # Stop Script (status bar STOP, Session menu, a key): ends the scripts
+      # this tab started and answers any script's open question with "stop".
+      def stop_scripts
+        @program.stop_prompts(@tab)
+        @controller.stop_scripts
+        redraw
+      end
+
+      # Whether the status bar shows STOP: a script runs on this tab or waits for an answer.
+      def script_busy? = @controller.scripts_running? || @program.prompt_open?(@tab)
 
       def relabel_menus(texts) = @menu_bar&.relabel(texts)
       def hwnd_ptr = @window.to_i # libui's window pointer, as menu clicks report it
@@ -363,6 +375,7 @@ module Tn3270
         when :audit_copy then copy_audit_picture
         when :audit_save then save_audit_picture
         when :undo then undo
+        when :stop_scripts then stop_scripts
         when :key
           clear_selection
           @controller.press(action[1])
@@ -488,6 +501,7 @@ module Tn3270
             when :fk then @program.flip(:key_bar, self)
             when :auto_enter then set_auto_enter(!@controller.auto_enter?) # this tab's, not a shared setting
             when :snip then @program.flip(:snippet_bar, self)
+            when :stop then stop_scripts
             when :position then nil # its tooltip shows the screen size
             else toggle_connection
             end

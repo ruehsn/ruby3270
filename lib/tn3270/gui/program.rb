@@ -8,6 +8,7 @@ require_relative "instance"
 require_relative "snippet_library"
 require_relative "terminal_window"
 require_relative "win32"
+require_relative "script_prompt"
 
 module Tn3270
   module Gui
@@ -18,6 +19,8 @@ module Tn3270
     # window it came from, and the command runs there. View options (key bar,
     # sidebar, crosshair...) apply to every window.
     class Program
+      include ScriptPrompts # questions and text from scripts (Session#ask, #choose, #show)
+
       PUMP_MS = 25 # how often the main thread checks for screen changes
       DRAG_START = 6 # pixels the mouse moves before a press on a tab is a drag
       DETACH = 30 # pixels above or below the tab strip before a tab tears off
@@ -238,6 +241,9 @@ module Tn3270
       # Another launch of the app sent this: open its session in a tab of the
       # window in front, or (no session given) open a new window.
       def handle_request(request)
+        return script_request(request) if request.key?("ui")
+        return script_request_gone(request["ui_gone"]) if request.key?("ui_gone")
+
         reply = request.delete("reply")
         return reply&.push(find_tab(request["tab"])&.controller&.attach_port) if request.key?("tab")
 
@@ -388,7 +394,7 @@ module Tn3270
       # ---- menus ---------------------------------------------------------------------
 
       # Key binding action shown as a menu item's shortcut, by menu command.
-      SHORTCUTS = { new_tab: "new_tab", close_tab: "close_tab", copy: "copy", paste: "paste", undo: "undo", show_find: "find",
+      SHORTCUTS = { stop_scripts: "stop_script", new_tab: "new_tab", close_tab: "close_tab", copy: "copy", paste: "paste", undo: "undo", show_find: "find",
                     paste_rest: "paste_rest", copy_audit_picture: "audit_copy", save_audit_picture: "audit_save",
                     open_picker: "snippet_picker", show_history: "history", caps: "caps",
                     crosshair: "crosshair", snippet_bar: "snippet_bar" }.freeze
@@ -454,6 +460,7 @@ module Tn3270
         # This tab's connection
         item(m, "Connect / Disconnect", :toggle_connection)
         item(m, "Edit Session...", :edit_session)
+        item(m, "Stop Scripts (this tab's)", :stop_scripts)
         UI.menu_append_separator(m)
         # The whole program
         item(m, "Program Settings...", :settings_dialog)

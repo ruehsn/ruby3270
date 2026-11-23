@@ -218,6 +218,87 @@ class InstanceTest < Minitest::Test
     assert_equal({ "session" => "A" }, I.parse(line, "t"))
   end
 
+  # A script asks the person something (Session#ask) and waits for the answer.
+  def test_a_scripts_question_round_trip
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "instance")
+      running = I.new(path: path)
+      app = Thread.new do
+        sleep 0.05 until (r = running.requests.first)
+        r["reply"] << { "value" => "USER01A" }
+        r
+      end
+      reply = I.user_request({ "kind" => "ask", "prompt" => "Job name?", "port" => 3271 }, path: path)
+      assert_equal({ "value" => "USER01A" }, reply)
+      request = app.value
+      assert_equal "ask", request["ui"]["kind"]
+      assert_equal 3271, request["ui"]["port"]
+      assert request["id"]
+      running.close
+      assert_raises(Tn3270::Error) { I.user_request({ "kind" => "ask" }, path: path) } # nothing running
+    end
+  end
+
+  # The script is stopped (killed) while its question is open: the app hears so.
+  def test_a_script_that_goes_away_is_reported
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "instance")
+      running = I.new(path: path)
+      info = JSON.parse(File.read(path))
+      sock = Socket.tcp("127.0.0.1", info["port"])
+      sock.write("#{JSON.generate('token' => info['token'], 'ui' => { 'kind' => 'ask' })}\n")
+      sleep 0.05 until (asked = running.requests.first)
+      sock.close
+      gone = nil
+      60.times do
+        gone = running.requests.find { |r| r.key?("ui_gone") }
+        break if gone
+
+        sleep 0.05
+      end
+      assert_equal asked["id"], gone["ui_gone"]
+      running.close
+    end
+  end
+
+  def test_ui_requests_keep_only_known_fields
+    line = JSON.generate("token" => "t", "ui" => { "kind" => "choose", "prompt" => "Which?", "options" => ["A", 2, "B"],
+                                                   "port" => "3271", "evil" => "x", "title" => "T" * 300 })
+    ui = I.parse_ui(line, "t")
+    assert_equal %w[A B], ui["options"]
+    assert_equal 200, ui["title"].size
+    refute ui.key?("port") # not a number
+    refute ui.key?("evil")
+    assert_nil I.parse_ui(line, "wrong")
+    assert_nil I.parse_ui(JSON.generate("token" => "t", "ui" => { "kind" => "format_disk" }), "t")
+    assert_nil I.parse(line, "t") # not an open request
+  end
+
+  def test_session_asks_through_the_window_and_can_be_stopped
+    s = Tn3270::Session.new(engine: Object.new)
+    s.window_port = 3272
+    sent = nil
+    answer = { "value" => "TEST" }
+    fake = lambda do |ui|
+      sent = ui
+      answer
+    end
+    original = I.method(:user_request)
+    I.define_singleton_method(:user_request) { |ui, **| fake.call(ui) }
+    begin
+      assert_equal "TEST", s.choose("Which system?", %w[PROD TEST])
+      assert_equal 3272, sent["port"]
+      answer = { "value" => "OTHER" }
+      assert_nil s.choose("Which system?", %w[PROD TEST]) # only a listed option comes back
+      answer = { "cancel" => true }
+      assert_nil s.ask("Job name?")
+      answer = { "stop" => true }
+      assert_raises(Tn3270::ScriptStopped) { s.ask("Job name?") }
+    ensure
+      I.define_singleton_method(:user_request, original)
+    end
+  end
+
   def test_a_stale_file_is_ignored
     Dir.mktmpdir do |dir|
       path = File.join(dir, "instance")
