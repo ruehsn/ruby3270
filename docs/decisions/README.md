@@ -2,6 +2,7 @@
 
 One file per work session, newest first.
 
+- [2026-11-23 — Quick pick recents, Stop Script in the picker, title bar double-click](2026-11-23-quick-pick-recents-stop-and-title-double-click.md)
 - [2026-11-23 — Script questions (ask, choose, show, notify) and Stop Script](2026-11-23-script-questions-and-stop.md)
 - [2026-11-23 — Win+V paste, Refresh Snippets and spelling patterns](2026-11-23-win-v-paste-snippet-refresh-spelling-patterns.md)
 - [2026-11-19 — Right-click paste, Session menu groups and release numbers](2026-11-19-right-click-paste-session-menu-release-numbers.md)

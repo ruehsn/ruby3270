@@ -18,7 +18,7 @@ The 3270 protocol itself is handled by **s3270** (`ws3270.exe` on Windows) from 
   full 62 x 160 screen redraws in about 5 ms
 - VS Code style title bar (Windows): the menus sit inside the title bar, next to the icon, with the
   window buttons on the right (to use the normal Windows title bar instead, set `custom_title_bar: false`
-  in the config file)
+  in the config file). Double-click an empty part of the title bar to maximize or restore the window
 - **Session tabs**, like a browser: several sessions in one window, each tab with its own status light
   (green = connected, amber = connecting, grey = not connected). The tabs sit in the title bar next to the
   menus. Ctrl+T or the + button opens a tab, Ctrl+W or the tab's × closes it (so does a middle-click),
@@ -135,7 +135,10 @@ The 3270 protocol itself is handled by **s3270** (`ws3270.exe` on Windows) from 
 - **Stop a script**: while a script runs on a tab (or waits for an answer) the status bar shows **STOP**; click
   it, or use Session > Stop Scripts, to end it and anything it started
 - **Quick picker finds settings too** (Ctrl+Space): type `caps`, `auto enter`, `underline`, `key bar`...
-  and Enter switches that option on or off, just like its menu item
+  and Enter switches that option on or off, just like its menu item. It finds **Stop Script** too (type
+  `stop`), and while a script runs on the tab Stop Script is the first entry
+- **Recent picks** (Ctrl+Space): opened with nothing typed, the quick picker lists your last 5 picks first
+  (snippets, scripts, settings or Stop Script), marked RECENT
 - **Export / Import Settings** (Session menu): your sessions, snippets and options in one file, to move to
   another PC or give to a colleague. A team's `welcome.yml` sets up a coworker's first launch. See [Config](#config)
 - **Quick keys**: the screen updates as soon as the host answers (about 6 ms for a cursor key against a local
@@ -433,7 +436,7 @@ settings (`spell_ignore`); they move to your file the first time spell check run
 ```
 ruby -Ilib test/session_test.rb      # Ruby API against the fake host
 ruby -Ilib test/gui_logic_test.rb    # key mapping and the GUI's background worker
-ruby -Ilib test/tabs_test.rb         # tab strip, tab names and numbers, the single-instance handoff, picker settings
+ruby -Ilib test/tabs_test.rb         # tab strip, tab names and numbers, the single-instance handoff, picker settings and recent picks
 ruby -Ilib test/settings_transfer_test.rb  # Export / Import Settings and welcome.yml
 ruby -Ilib test/spelling_test.rb     # which words spell check looks at
 ```

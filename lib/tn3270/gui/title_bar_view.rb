@@ -91,8 +91,8 @@ module Tn3270
         case hit[0]
         when :menu then UI.queue_main { open_title_menu(hit[1]) }
         when :caption
-          if event[:count].to_i >= 2
-            @title_bar.toggle_maximize
+          if caption_double_click?(event)
+            @title_pressed = [:caption_double] # maximize / restore on the release, like the button
           elsif event[:y] < 5 && !@title_bar.maximized?
             edge = if event[:x] < 8 then :top_left
                    elsif event[:x] > event[:area_width] - 8 then :top_right
@@ -107,9 +107,30 @@ module Tn3270
         end
       end
 
+      # Whether this caption press is the second of a double-click. Timed here,
+      # not taken from event[:count]: the first press hands the mouse to the
+      # Windows move loop, which eats its release, so libui never counts two.
+      def caption_double_click?(event)
+        now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        last = @caption_click
+        @caption_click = [now, event[:x], event[:y]]
+        double = event[:count].to_i >= 2 ||
+                 (last && TitleBarView.double_click?(last, @caption_click, Win32.double_click_seconds))
+        @caption_click = nil if double # a third press starts over
+        double
+      end
+
+      # Two presses [time, x, y] make a double-click: close enough in time and place.
+      def self.double_click?(first, second, seconds, slop: 4)
+        t1, x1, y1 = first
+        t2, x2, y2 = second
+        (t2 - t1) <= seconds && (x2 - x1).abs <= slop && (y2 - y1).abs <= slop
+      end
+
       def title_mouse_up(event)
         pressed = @title_pressed
         @title_pressed = nil
+        return @title_bar.toggle_maximize if pressed == [:caption_double]
         return unless pressed && title_hit(event) == pressed
 
         case pressed[0]

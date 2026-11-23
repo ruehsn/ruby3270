@@ -258,6 +258,22 @@ module Tn3270
 
       def maximized?(window) = fn("IsZoomed", [P]).call(hwnd(window)) != 0
 
+      # Whether the primary mouse button is held down now (swapped buttons too).
+      def left_button_down?
+        vk = fn("GetSystemMetrics", [I]).call(23).zero? ? 0x01 : 0x02 # SM_SWAPBUTTON: VK_LBUTTON / VK_RBUTTON
+        fn("GetAsyncKeyState", [I], Fiddle::TYPE_SHORT).call(vk).negative?
+      rescue StandardError
+        true
+      end
+
+      # The Windows double-click time, in seconds (Mouse settings; 0.5 if unknown).
+      def double_click_seconds
+        ms = fn("GetDoubleClickTime", [], I).call
+        ms.positive? ? ms / 1000.0 : 0.5
+      rescue StandardError
+        0.5
+      end
+
       # The largest outer size Windows lets a window be dragged to: [w, h].
       SM_CXMAXTRACK = 59
       SM_CYMAXTRACK = 60
@@ -550,6 +566,11 @@ module Tn3270
         # Hands a mouse press over to Windows as if it were on the title bar
         # (:caption, to move the window) or on the top border (to resize).
         def begin_drag(area = :caption)
+          # The press is handed over after it happened (queued). If the button
+          # is already up, Windows' move loop would take the next press as its
+          # release, and a double-click on the title bar would be lost.
+          return unless Win32.left_button_down?
+
           pt = Fiddle::Pointer.malloc(8, Fiddle::RUBY_FREE)
           Win32.fn("GetCursorPos", [P]).call(pt)
           x, y = pt[0, 8].unpack("l2")

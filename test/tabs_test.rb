@@ -457,3 +457,55 @@ class ShortcutFollowTest < Minitest::Test
     end
   end
 end
+
+require "tn3270/gui/quick_pick"
+
+class QuickPickTest < Minitest::Test
+  Q = Tn3270::Gui::QuickPick
+  T = Tn3270::Gui::Program::Toggle
+  Snip = Struct.new(:name, :text)
+  SNIPS = [Snip.new("Sign on", "x"), Snip.new("Logoff", "y"), Snip.new("Status", "z")].freeze
+  TOGGLES = [T.new(:caps, "Caps Lock", "", false)].freeze
+
+  def items(query: "", recent: [], busy: false, snippets: SNIPS, matched: [])
+    Q.items(query: query, toggles: TOGGLES, matched_toggles: matched, snippets: snippets,
+            recent: recent, busy: busy, limit: 10)
+  end
+
+  def test_remember_keeps_the_last_five_newest_first_without_repeats
+    recent = []
+    %w[a b c d e f].each { |n| recent = Q.remember(recent, Snip.new(n, "")) }
+    assert_equal %w[snippet:f snippet:e snippet:d snippet:c snippet:b], recent
+    assert_equal %w[snippet:c snippet:f snippet:e snippet:d snippet:b], Q.remember(recent, Snip.new("c", ""))
+  end
+
+  def test_recent_picks_come_first_when_nothing_is_typed
+    recent = ["snippet:Status", "setting:caps", "command:stop_scripts", "snippet:Gone"]
+    list = items(recent: recent)
+    assert_equal ["Status", :caps, :stop_scripts, "Sign on", "Logoff"], list.map(&:name)
+  end
+
+  def test_stop_script_is_first_while_a_script_runs
+    assert_equal :stop_scripts, items(busy: true).first.name
+    assert_equal 1, items(busy: true, recent: ["command:stop_scripts"]).count { |i| i.name == :stop_scripts }
+    refute items.any? { |i| i.name == :stop_scripts }
+  end
+
+  def test_typing_finds_the_stop_script_command
+    assert_equal [:stop_scripts], items(query: "stop", snippets: []).map(&:name)
+    assert_equal [:stop_scripts], items(query: "kill script", snippets: []).map(&:name)
+    assert_equal ["Logoff"], items(query: "log", snippets: [SNIPS[1]]).map(&:name)
+  end
+end
+
+require "tn3270/gui/title_bar_view"
+
+class TitleDoubleClickTest < Minitest::Test
+  def dbl?(a, b) = Tn3270::Gui::TitleBarView.double_click?(a, b, 0.5)
+
+  def test_two_quick_presses_in_one_place
+    assert dbl?([1.0, 100, 10], [1.3, 102, 11])
+    refute dbl?([1.0, 100, 10], [1.7, 100, 10]) # too slow
+    refute dbl?([1.0, 100, 10], [1.2, 140, 10]) # moved
+  end
+end

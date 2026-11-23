@@ -4,6 +4,7 @@ require_relative "theme"
 require_relative "hit_map"
 require_relative "snippet_library"
 require_relative "snippet_dialogs"
+require_relative "quick_pick"
 require_relative "../snippet"
 
 module Tn3270
@@ -17,7 +18,8 @@ module Tn3270
     # the screen. Rest the pointer on a snippet to see its text.
     # Picker: type to filter, Up / Down, Enter types it, Escape closes. It also
     # finds the on/off settings from the menus ("caps", "underline", "auto
-    # enter"...): Enter on one of those switches it.
+    # enter"...): Enter on one of those switches it, and commands such as
+    # Stop Script. Opened with nothing typed, it lists the last few picks first.
     module SnippetPanel
       include Theme
 
@@ -67,14 +69,26 @@ module Tn3270
       def panel_items = library.search(@snip_query.to_s)
       def picker_items
         q = @picker[:query]
-        (@program.search_toggles(q) + library.search(q)).first(PICKER_ROWS)
+        QuickPick.items(query: q, toggles: @program.toggles, matched_toggles: @program.search_toggles(q),
+                        snippets: library.search(q), recent: recent_picks, busy: script_busy?, limit: PICKER_ROWS)
       end
 
       def setting?(item) = item.is_a?(Program::Toggle)
+      def command?(item) = item.is_a?(QuickPick::Command)
+      def snippet?(item) = item && !setting?(item) && !command?(item)
 
-      # Enter (or a click) in the picker: types the snippet, or switches the setting.
+      # The last few picks (QuickPick keys), most recent first; kept in the config.
+      def recent_picks = Array(@config["recent_picks"])
+
+      # Enter (or a click) in the picker: types the snippet, switches the
+      # setting or runs the command.
       def pick(item)
         close_picker
+        return unless item
+
+        @config["recent_picks"] = QuickPick.remember(recent_picks, item)
+        @config.save
+        return perform([item.name]) if command?(item)
         return run_snippet_item(item) unless setting?(item)
 
         @program.flip(item.name, self)
@@ -126,7 +140,7 @@ module Tn3270
 
       def picker_edit
         item = picker_items[@picker[:sel]]
-        return if item.nil? || setting?(item)
+        return unless snippet?(item)
 
         close_picker
         edit_snippet(item)
@@ -385,7 +399,7 @@ module Tn3270
         y = by + 10
         pt.fill_rect(x, y, bw - 20, 28, FIELD_BG)
         query = @picker[:query]
-        ui_text(x + 8, y + 6, query.empty? ? "Type to find a snippet or a setting" : fit_text(query, bw - 40), query.empty? ? TITLE_MUTED : WHITE)
+        ui_text(x + 8, y + 6, query.empty? ? "Type to find a snippet, setting or command (recent picks first)" : fit_text(query, bw - 40), query.empty? ? TITLE_MUTED : WHITE)
         cx = x + 9 + (query.empty? ? 0 : FontMetrics.text_width(UI_FONT, UI_SIZE, fit_text(query, bw - 40)))
         pt.fill_rect(cx, y + 6, 1, 16, TITLE_FG)
         y += 36
@@ -397,10 +411,14 @@ module Tn3270
           pt.fill_rect(bx + 1, y, bw - 2, rh, ROW_SEL) if i == @picker[:sel]
           if setting?(item)
             draw_setting_row(item, x, y, bw, line)
+          elsif command?(item)
+            ui_text(x + 8, y + 4, fit_text(item.label, bw - 40), WHITE)
+            ui_text(x + 8, y + 4 + line, fit_text("Command - #{item.detail}", bw - 40), TITLE_MUTED)
           else
             ui_text(x + 8, y + 4, fit_text(item.name, bw - 40), WHITE)
             ui_text(x + 8, y + 4 + line, fit_text(item_subtitle(item), bw - 40), TITLE_MUTED)
           end
+          draw_recent_mark(x, y, bw) if query.empty? && QuickPick.recent?(item, recent_picks) && !setting?(item)
           @picker_hits.add(bx, y, bw, rh, [:run, item])
           y += rh
         end
@@ -408,7 +426,7 @@ module Tn3270
         fy = by + bh - line - 10
         ui_text(x, fy + 2, "Enter: type it / switch it   Up/Down: choose   Esc: close", TITLE_MUTED)
         right = bx + bw - 10 # buttons are laid out right to left
-        [["Edit  Ctrl+E", :edit, items[@picker[:sel]] && !setting?(items[@picker[:sel]])], ["New  Ctrl+N", :new, true]].each do |label, action, enabled|
+        [["Edit  Ctrl+E", :edit, snippet?(items[@picker[:sel]])], ["New  Ctrl+N", :new, true]].each do |label, action, enabled|
           btn_w = FontMetrics.text_width(UI_FONT, UI_SIZE, label) + 16
           btn_x = right - btn_w
           right = btn_x - 6
@@ -417,6 +435,13 @@ module Tn3270
           ui_text(btn_x + 8, fy, label, enabled ? TITLE_FG : TITLE_MUTED)
           @picker_hits.add(btn_x, fy - 3, btn_w, line + 6, [action]) if enabled
         end
+      end
+
+      # "RECENT" at the right of a row picked lately (settings have their ON / OFF badge there).
+      def draw_recent_mark(x, y, bw)
+        label = "RECENT"
+        w = FontMetrics.text_width(UI_FONT, UI_SIZE, label) + 14
+        ui_text(x + bw - 28 - w + 7, y + 4, label, TITLE_MUTED)
       end
 
       # A setting in the picker: its name, what it does, and an ON / OFF badge.
