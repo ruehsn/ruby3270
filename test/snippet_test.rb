@@ -95,6 +95,16 @@ class SnippetLibraryTest < Minitest::Test
     assert_equal 3, @lib.items.size
   end
 
+  def test_reload_reads_files_whose_time_did_not_change
+    a = File.join(@team, "a.yml")
+    stamp = File.mtime(a)
+    File.write(a, [{ "name" => "Replaced", "text" => "x" }].to_yaml)
+    File.utime(stamp, stamp, a) # e.g. a copy on a network drive that kept the old time
+    refute @lib.reload_if_changed
+    assert @lib.reload
+    assert_equal %w[Replaced SDSF], @lib.items.map(&:name)
+  end
+
   def test_search_puts_name_matches_first
     @lib.save(nil, "Status", "=S.ST{Enter}", @lib.personal_file)
     assert_equal ["SDSF", "Status"], @lib.search("s.st").map(&:name)

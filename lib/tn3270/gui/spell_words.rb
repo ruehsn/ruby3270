@@ -15,6 +15,9 @@ module Tn3270
     #      a company's own list, which program updates never touch
     #   4. the files in the spell_word_files setting, e.g. a team list on a
     #      network drive
+    #
+    # A word with ? or * in it is a pattern (see WordPattern): AC?????? skips
+    # every 8-letter word starting with AC.
     module SpellWords
       BUILT_IN = File.expand_path("mainframe_words.txt", __dir__)
       PROGRAM_DIR = File.expand_path("../../..", __dir__)
@@ -23,6 +26,8 @@ module Tn3270
       HEADER = <<~TEXT
         # Your words spell check never flags. Right-click > Ignore adds to this file;
         # edit it in any text editor. One or more words per line; # starts a comment.
+        # Patterns: ? is any one letter, * any letters. AC?????? skips every
+        # 8-letter word starting with AC; AH* every word starting with AH.
         # Share it by copying it, or list a shared copy in spell_word_files.
       TEXT
 

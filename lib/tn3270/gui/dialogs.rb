@@ -312,7 +312,7 @@ module Tn3270
       end
 
       def show
-        @win = Ui.window("Program Settings", 560, 470)
+        @win = Ui.window("Program Settings", 600, 560)
         UI.window_on_closing(@win) { 1 }
         main = Ui.vbox
 
@@ -333,6 +333,10 @@ module Tn3270
         if Win32.available?
           spelling = Ui.vbox
           toggle(spelling, "Spell check (long input fields)", :spell_check, "spell_check")
+          lrow = Ui.add(spelling, Ui.hbox)
+          Ui.add(lrow, Ui.label("Check words at least this many letters long:"))
+          Ui.add(lrow, Ui.spinbox(1, 20, @config["spell_min_word"].to_i) { |n| @program.for_all(:set_spell_min_word, n) })
+          Ui.add(spelling, Ui.label("Skip patterns in your word list: AC?????? = 8 letters starting with AC (? one letter, * any)"))
           srow = Ui.add(spelling, Ui.hbox)
           Ui.add(srow, Ui.button("Language...") { @window.command(:choose_spell_language) })
           Ui.add(srow, Ui.button("Edit My Spelling Words...") { @window.command(:edit_spell_words) })
@@ -344,6 +348,7 @@ module Tn3270
         nrow = Ui.add(snippets, Ui.hbox)
         Ui.add(nrow, Ui.button("Snippet Files...") { @window.command(:snippet_files_dialog) })
         Ui.add(nrow, Ui.button("Quick Pick...") { @window.command(:open_picker) })
+        Ui.add(nrow, Ui.button("Refresh Snippets") { @window.command(:refresh_snippets) })
         Ui.add(main, Ui.group("Snippets", snippets))
 
         if Win32.available?

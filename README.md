@@ -49,6 +49,7 @@ The 3270 protocol itself is handled by **s3270** (`ws3270.exe` on Windows) from 
   at the field's end, and the paste stops at the bottom of the screen (the status bar says so). Where there's
   no input field below (a form), the line goes in the next input field down. Pasting overwrites what's there:
   in ISPF, make room first with a line command such as `I5`
+  - **Clipboard history** (Windows): Win+V and picking an item pastes it, like Ctrl+V
   - **Paste the Rest** (Ctrl+Shift+V or Edit > Paste the Rest): when a paste runs out of screen, the lines
     that had no room are kept and the status bar shows how many (`PASTE +30`). Scroll on (PF8), click
     where the next line goes, and Paste the Rest carries on from there, as many times as it takes
@@ -101,8 +102,8 @@ The 3270 protocol itself is handled by **s3270** (`ws3270.exe` on Windows) from 
   Reset: it unlocks at once, drops any queued keys, and if the cursor is somewhere you can't type it
   moves to the next input field. While a bad entry has the keyboard locked (X -f) the screen background
   turns dark red. On an unlocked screen Esc does nothing. Ctrl+R is always Reset
-- **Spell check** (Windows): misspelled words in long input fields (20+ characters, `spell_min_field`)
-  get a red wavy underline. ALL-CAPS words are checked too. Right-click one for suggestions, Ignore, or
+- **Spell check** (Windows): misspelled words of 4+ letters (`spell_min_word`, also in Program Settings) in
+  long input fields (20+ characters, `spell_min_field`) get a red wavy underline. ALL-CAPS words are checked too. Right-click one for suggestions, Ignore, or
   Add to the Windows dictionary; Ctrl+; jumps to the next one. Codes like SYS1.PROCLIB or IEF142I and
   hidden fields are skipped. View > Spell Check turns it off; View > Spell Check Language picks the
   language. Uses the spell checker built into Windows, so there's nothing to install. Common mainframe
@@ -249,6 +250,8 @@ several screens:
 - **Hotkeys**: Ctrl+1 to Ctrl+9 type the first nine snippets in the sidebar list (change them in
   Keys > Keyboard Mapping).
 - **From the screen**: select text, then Edit > New Snippet from Selection.
+- **Refresh** (Edit > Refresh Snippets, or the button in Program Settings): reads every snippet file and
+  script folder again, for a change the sidebar hasn't picked up, with no restart.
 
 | In a snippet | Does |
 |---|---|
@@ -356,6 +359,7 @@ snippet_files:            # shared snippet files or folders (yours: ~/.ruby3270-
 - '\\server\team\3270-snippets.yml'
 script_folders:           # folders of scripts listed with the snippets (see Script folders)
 - 'C:\mainframe\scripts'
+spell_min_word: 4         # spell check skips shorter words
 lock_ratio: true          # keep the window the shape of the screen while resizing
 single_instance: true     # launching again opens a tab in the running copy
 keys:                     # overrides of the default key bindings ("" unbinds)
@@ -408,7 +412,9 @@ Words spell check never flags come from these plain text files:
 4. any files in `spell_word_files` (default `[]`), e.g. `['\\server\team\spelling.txt']`, which a
    `welcome.yml` can set for everyone
 
-One or more words per line, any case; lines starting with `#` are comments. A saved change to any of
+One or more words per line, any case; lines starting with `#` are comments. A word with `?` (any one
+letter) or `*` (any letters) in it is a pattern: `AC??????` skips every 8-letter word starting with AC,
+`AH*` every word starting with AH. Nothing else is special, so there are no regular expressions. A saved change to any of
 the files takes effect within a couple of seconds, with no restart. Nothing in them is copied into
 anyone's settings, so editing a shared file reaches everyone. Export Settings includes your own words,
 and Import Settings adds them to the importer's file. Older versions kept ignored words in the

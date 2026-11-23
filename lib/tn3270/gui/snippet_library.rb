@@ -79,6 +79,13 @@ module Tn3270
         true
       end
 
+      # Loads every file again, changed or not (Edit > Refresh Snippets: a
+      # network drive can keep an old time on a file that was replaced).
+      def reload
+        @stamps = nil
+        reload_if_changed
+      end
+
       def load_all
         @errors = []
         @unreadable = []

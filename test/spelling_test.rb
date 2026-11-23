@@ -88,6 +88,32 @@ class SpellingTest < Minitest::Test
     assert_empty sp.misspelled(screen(field("teh plese")))
   end
 
+  def test_short_words_are_skipped_below_min_word
+    sp = Spelling.new(@checker, min_word: 4)
+    assert_equal ["plese"], sp.misspelled(screen(field("teh plese"))).map(&:text)
+    sp.min_word = 3
+    assert_equal %w[teh plese], sp.misspelled(screen(field("teh plese"))).map(&:text)
+  end
+
+  def test_patterns_in_the_ignore_list
+    sp = Spelling.new(@checker, ignored: ["AC??????", "ah*", "*xx"])
+    text = "ACBDEFGH ACBDEFG AHZZZ ahq BLAHZZ QQXX plese"
+    assert_equal %w[ACBDEFG BLAHZZ plese], sp.misspelled(screen(field(text, length: 60))).map(&:text)
+  end
+
+  def test_word_pattern
+    pat = ->(p, w) { Tn3270::Gui::WordPattern.new(p).match?(w) }
+    assert pat.("AC??????", "acdefghi")
+    refute pat.("AC??????", "acdefgh")
+    refute pat.("AC??????", "ahdefghi")
+    assert pat.("a*b*c", "aXXbYYc")
+    assert pat.("*", "anything")
+    assert pat.("a**", "a")
+    refute pat.("a*b", "aXXc")
+    refute pat.("a.c", "abc") # only ? and * are special
+    assert pat.("#{'*a' * 20}", "a" * 30) # no blow-up
+  end
+
   def test_word_at_and_wrapping_cells
     scr = screen(field("ok the plese", row: 0, col: 75))
     word = @sp.word_at(scr, 1, 0) # "plese" starts at 0,82 -> row 1, col 2... so not this cell

@@ -2,6 +2,7 @@
 
 One file per work session, newest first.
 
+- [2026-11-23 — Win+V paste, Refresh Snippets and spelling patterns](2026-11-23-win-v-paste-snippet-refresh-spelling-patterns.md)
 - [2026-11-19 — Right-click paste, Session menu groups and release numbers](2026-11-19-right-click-paste-session-menu-release-numbers.md)
 - [2026-11-16 — Program Settings, tabs from scripts, active tab and desktop shortcuts](2026-11-16-program-settings-scripted-tabs-shortcuts.md)
 - [2026-11-16 — Review fixes, Paste the Rest, tab colors and the audit picture](2026-11-16-review-fixes-paste-rest-tab-colors-audit-picture.md)

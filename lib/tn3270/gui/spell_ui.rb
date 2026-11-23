@@ -29,10 +29,12 @@ module Tn3270
           @words_stamp = SpellWords.stamp(@config)
           @words_checked = monotonic_now
           @spelling = checker && Spelling.new(checker, min_field: @config["spell_min_field"].to_i,
+                                                       min_word: @config["spell_min_word"].to_i,
                                                        ignored: SpellWords.load(@config))
         end
         reload_spell_words if @spelling
         @spelling&.min_field = @config["spell_min_field"].to_i
+        @spelling&.min_word = @config["spell_min_word"].to_i
         @spelling
       end
 
@@ -173,6 +175,12 @@ module Tn3270
 
         _, cw, ch, ox, oy = metrics(w, h)
         Win32.client_to_screen(@area.control, ox + (word.col * cw), oy + ((word.row + 1) * ch) + 2)
+      end
+
+      # Program Settings: the shortest word checked (4 skips 3-letter words).
+      def set_spell_min_word(length)
+        set_option("spell_min_word", length)
+        refresh_spelling
       end
 
       def set_spell_check(on)

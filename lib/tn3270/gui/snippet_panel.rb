@@ -159,6 +159,15 @@ module Tn3270
         @snippet_files.show
       end
 
+      # Edit > Refresh Snippets: reads every snippet file and script folder
+      # again and updates the sidebar in every window.
+      def refresh_snippets
+        library.reload
+        @program.for_all(:snippets_changed)
+        problems = library.errors.size
+        @controller.flash("Snippets refreshed: #{library.items.size}"                           "#{problems.positive? ? ", #{problems} file problem(s), see Snippet Files" : ''}")
+      end
+
       def snippets_changed
         library.reload_if_changed
         @snip_sel = @snip_sel.to_i.clamp(0, [panel_items.size - 1, 0].max)

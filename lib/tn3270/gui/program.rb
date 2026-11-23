@@ -49,6 +49,7 @@ module Tn3270
         # anything reads the settings.
         @bindings = Keymap.bindings(@config["keys"]) if SettingsTransfer.welcome(@config, library, first: @first_run)
         UI.init
+        Win32.fill_missing_scan_codes # so Win+V's clipboard history can paste
         start_wakeups
         build_menus
         open_window(request: @request)
@@ -488,6 +489,7 @@ module Tn3270
         UI.menu_append_separator(m)
         item(m, "Snippets: Quick Pick...", :open_picker)
         item(m, "New Snippet from Selection...", :snippet_from_selection)
+        item(m, "Refresh Snippets (read the files again)", :refresh_snippets)
         UI.menu_append_separator(m)
         check_item(m, "Caps Lock (this app only)", c["caps"], :caps, words: "uppercase capitals") { |_w, on| for_all(:set_caps, on) }
 

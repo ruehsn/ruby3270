@@ -133,6 +133,43 @@ module Tn3270
         nil
       end
 
+      # Keys sent by other programs (Win+V's clipboard history sends Ctrl+V
+      # this way, so do AutoHotkey and password managers) often carry only a
+      # virtual-key code, no scan code. libui reads letters and digits by scan
+      # code alone, so it drops them and Win+V never pastes. This hook sees
+      # every message this thread takes from its queue and fills in the
+      # missing scan code before libui looks at it. Install once, on the UI
+      # thread.
+      WH_GETMESSAGE = 3
+      PM_REMOVE = 1
+      KEY_MESSAGES = [0x100, 0x101, 0x104, 0x105].freeze # WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP
+
+      def fill_missing_scan_codes
+        return if !available? || @scan_hook
+
+        next_hook = fn("CallNextHookEx", [P, I, U, Fiddle::TYPE_INTPTR_T], Fiddle::TYPE_INTPTR_T)
+        to_scan = fn("MapVirtualKeyW", [I, I])
+        # Kept in an instance variable so it is never garbage collected.
+        @scan_proc = Fiddle::Closure::BlockCaller.new(Fiddle::TYPE_INTPTR_T, [I, U, Fiddle::TYPE_INTPTR_T]) do |code, wp, lp|
+          if code >= 0 && wp == PM_REMOVE
+            msg = Fiddle::Pointer.new(lp) # MSG: hwnd, message @8, wParam @16, lParam @24
+            if KEY_MESSAGES.include?(msg[8, 4].unpack1("L"))
+              key_lp = msg[24, 8].unpack1("q")
+              if key_lp.nobits?(0xFF0000) && (scan = to_scan.call(msg[16, 8].unpack1("Q") & 0xFF, 0)).positive?
+                msg[24, 8] = [key_lp | ((scan & 0xFF) << 16)].pack("q")
+              end
+            end
+          end
+          next_hook.call(nil, code, wp, lp)
+        end
+        thread = Fiddle::Function.new(Fiddle.dlopen("kernel32")["GetCurrentThreadId"], [], I).call
+        set = fn("SetWindowsHookExW", [I, P, P, I], P)
+        @scan_hook = set.call(WH_GETMESSAGE, @scan_proc, nil, thread)
+        @scan_hook = nil if @scan_hook.null?
+      rescue StandardError
+        nil
+      end
+
       # Whether the keyboard's own Caps Lock is on.
       def caps_lock_on?
         return false unless available?

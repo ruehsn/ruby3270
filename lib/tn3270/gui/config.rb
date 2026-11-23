@@ -41,6 +41,7 @@ module Tn3270
         "crosshair" => false, # highlight the cursor's row and column
         "spell_check" => true, # Windows: red wavy underline under misspelled words in long input fields
         "spell_min_field" => 20, # ...fields at least this long (shorter ones usually hold codes)
+        "spell_min_word" => 4, # ...and only words at least this long (3-letter words are mostly codes)
         "spell_language" => nil, # e.g. "en-GB"; nil = the Windows display language
         "personal_spelling" => nil, # your word list file (nil: ~/.ruby3270-spelling.txt; right-click > Ignore adds to it)
         "spell_word_files" => [], # more word lists never flagged, e.g. a team file (see SpellWords)
