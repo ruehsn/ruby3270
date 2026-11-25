@@ -129,7 +129,7 @@ The 3270 protocol itself is handled by **s3270** (`ws3270.exe` on Windows) from 
   .bat, .py...) show in the snippet list with the name and description from their top comments, and
   double-clicking one runs it in the background on the session. See [Script folders](#script-folders)
 - **Scripts that ask** (Ruby scripts): `ask`, `choose`, `show` and `notify` let a script ask you for a value,
-  offer a list to pick from, or show a report, each in a small window of its own, so nothing goes into the
+  offer a list to pick from (radio buttons, with an optional Other box to type in), or show a report, each in a small window of its own, so nothing goes into the
   3270 screen. See [Asking the person at the window](docs/API.md#asking-the-person-at-the-window) and
   [examples/ask_the_user.rb](examples/ask_the_user.rb)
 - **Stop a script**: while a script runs on a tab (or waits for an answer) the status bar shows **STOP**; click

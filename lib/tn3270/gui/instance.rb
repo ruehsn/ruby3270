@@ -129,10 +129,18 @@ module Tn3270
         options = ui["options"].is_a?(Array) ? ui["options"].grep(String).first(500).map { |o| o[0, 200] } : []
         { "kind" => ui["kind"], "title" => text.("title", 200), "prompt" => text.("prompt", 2000),
           "default" => text.("default", 2000), "text" => text.("text", MAX_TEXT), "options" => options,
-          "secret" => ui["secret"] == true, "wait" => ui["wait"] == true,
+          "secret" => ui["secret"] == true, "wait" => ui["wait"] == true, "other" => other_label(ui["other"]),
           "port" => (ui["port"] if ui["port"].is_a?(Integer)) }.compact
       rescue JSON::ParserError
         nil
+      end
+
+      # choose's Other choice: true gives "Other:", a string its own label, else none.
+      def self.other_label(other)
+        return "Other:" if other == true
+        return nil unless other.is_a?(String) && !other.strip.empty?
+
+        other.strip[0, 60]
       end
 
       def self.token_ok?(given, token)

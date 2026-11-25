@@ -19,6 +19,8 @@ module Tn3270
     class ScriptPrompt
       include DialogSupport
 
+      RADIO_MAX = 15 # more options than this show as a list to scroll
+
       attr_reader :id, :tab
 
       # owner: the libui window it belongs over; on_done: called once it's
@@ -34,7 +36,7 @@ module Tn3270
       end
 
       def show
-        @win = Ui.window("Script: #{title}", 480, 150 + (prompt_lines * 18))
+        @win = Ui.window("Script: #{title}", 480, window_height)
         UI.window_on_closing(@win) do
           finish({ "cancel" => true }, false)
           1
@@ -82,6 +84,17 @@ module Tn3270
 
       def title = (@ui["title"].to_s.strip.empty? ? "Question" : @ui["title"])
       def prompt_lines = [@ui["prompt"].to_s.lines.size, 1].max
+      def options = @ui["options"]
+      def other_label = @ui["other"] # nil: no Other choice
+      def radios? = options.size <= RADIO_MAX
+
+      def window_height
+        h = 150 + (prompt_lines * 18)
+        return h unless @ui["kind"] == "choose"
+        return h + 240 + (other_label ? 30 : 0) unless radios?
+
+        110 + (prompt_lines * 18) + ((options.size + (other_label ? 1 : 0)) * 20) + (other_label ? 30 : 0)
+      end
 
       def add_entry(box)
         @entry = @ui["secret"] ? UI.new_password_entry : UI.new_entry
@@ -89,31 +102,67 @@ module Tn3270
         Ui.add(box, @entry)
       end
 
-      # A drop-down list for a short list; a list to scroll (double-click
-      # picks) for a long one.
+      # Radio buttons for a short list; a list to scroll (double-click picks)
+      # for a long one. With an Other choice, a text box for anything else:
+      # typing in it picks Other.
       def add_choices(box)
-        options = @ui["options"]
-        start = options.index(@ui["default"]) || 0
-        if options.size <= 15
-          @combo = Ui.add(box, Ui.combobox(options, selected: start))
+        typed = other_label && !options.include?(@ui["default"].to_s) ? @ui["default"].to_s : ""
+        if radios?
+          add_radios(box, typed.empty? ? options.index(@ui["default"]) || 0 : options.size)
         else
           @table = Ui::Table.new(["Choice"], options.map { |o| [o] }) { |row| pick(row) }
           Ui.add(box, @table.control, stretchy: true)
-          UI.window_set_content_size(@win, 480, 380)
         end
+        add_other(box, typed) if other_label
       end
+
+      def add_radios(box, start)
+        @radios = Ui.keep(UI.new_radio_buttons)
+        options.each { |o| UI.radio_buttons_append(@radios, o) }
+        UI.radio_buttons_append(@radios, other_label) if other_label
+        UI.radio_buttons_set_selected(@radios, start)
+        UI.radio_buttons_on_selected(@radios) do
+          Win32.focus_control(@other) if @other && other_picked?
+          nil
+        end
+        Ui.add(box, @radios)
+      end
+
+      # The text box for Other; next to the radio buttons it says nothing
+      # more, under a long list it says it's used instead of the list.
+      def add_other(box, typed)
+        row = Ui.add(box, Ui.hbox)
+        Ui.add(row, Ui.label(radios? ? "   " : "#{other_label} (used instead of the list)")) # indent under the radio
+        @other = UI.new_entry
+        UI.entry_set_text(@other, typed)
+        UI.entry_on_changed(@other) do
+          UI.radio_buttons_set_selected(@radios, options.size) if @radios && !Ui.entry_text(@other).empty?
+          nil
+        end
+        Ui.add(row, Ui.keep(@other), stretchy: true)
+      end
+
+      def other_picked? = @radios && UI.radio_buttons_selected(@radios) == options.size
+      def other_text = @other ? Ui.entry_text(@other).strip : ""
 
       def ok
         return finish("value" => Ui.entry_text(@entry)) if @entry
-        return pick(UI.combobox_selected(@combo)) if @combo
+        return ok_other if other_picked? || (!@radios && !other_text.empty?)
+        return pick(UI.radio_buttons_selected(@radios)) if @radios
 
         row = @table.selected
-        row ||= @ui["options"].index(@ui["default"])
+        row ||= options.index(@ui["default"])
         row ? pick(row) : UI.label_set_text(@note, "Pick one first (or double-click it).")
       end
 
+      def ok_other
+        return UI.label_set_text(@note, "Type what you want next to #{other_label}") if other_text.empty?
+
+        finish("value" => other_text, "other" => true)
+      end
+
       def pick(row)
-        choice = row && row >= 0 ? @ui["options"][row] : nil
+        choice = row && row >= 0 ? options[row] : nil
         finish(choice ? { "value" => choice } : { "cancel" => true })
       end
 

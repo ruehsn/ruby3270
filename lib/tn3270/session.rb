@@ -377,13 +377,19 @@ module Tn3270
 
     # One of `options` (strings), as the user picked it, or nil if they cancel.
     #   lpar = s.choose("Which system?", %w[PROD TEST DEV], default: "TEST")
-    def choose(prompt, options, default: nil, title: nil)
+    # other: true adds an "Other:" choice with a text box (a string names it,
+    # e.g. other: "Another LPAR:"); then what they typed can come back too.
+    def choose(prompt, options, default: nil, title: nil, other: false)
       list = options.map(&:to_s)
       raise ArgumentError, "choose needs at least one option" if list.empty?
 
-      answer = user_request("kind" => "choose", "prompt" => prompt.to_s, "options" => list,
-                            "default" => default&.to_s, "title" => title&.to_s)["value"]
-      list.include?(answer) ? answer : nil
+      reply = user_request("kind" => "choose", "prompt" => prompt.to_s, "options" => list,
+                           "default" => default&.to_s, "title" => title&.to_s, "other" => other || nil)
+      answer = reply["value"]
+      return answer if list.include?(answer)
+
+      typed = answer.to_s.strip
+      other && reply["other"] && !typed.empty? ? typed : nil
     end
 
     # Shows text in a window of its own (read-only; it can be copied from).

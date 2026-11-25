@@ -241,7 +241,7 @@ the terminal while its window is up.
 | Call | Does |
 | --- | --- |
 | `ask("Job name?", default: "", title: nil, secret: false)` | A line of text from the person, or `nil` if they press Cancel. `secret: true` hides what's typed (for a password). |
-| `choose("Which system?", %w[PROD TEST DEV], default: "TEST", title: nil)` | One of the options, exactly as given, or `nil` for Cancel. Up to 15 options show as a drop-down list; more as a list to scroll (double-click picks). |
+| `choose("Which system?", %w[PROD TEST DEV], default: "TEST", title: nil, other: false)` | One of the options, exactly as given, or `nil` for Cancel. Up to 15 options show as radio buttons; more as a list to scroll (double-click picks). `other: true` adds an **Other:** choice with a text box (a string names it, e.g. `other: "Another LPAR:"`), and then what was typed there comes back instead (stripped; an empty box isn't accepted). A `default` that isn't in the list starts in the Other box. |
 | `show(text, title: "Script", wait: false)` | Shows text, read-only, in a window with **Copy All**, in a monospaced font so screen text keeps its columns. Showing again with the same title updates that window, so a long job can show its progress there. `wait: true` waits until it's closed. |
 | `notify("Job submitted")` | A short message in the tab's status bar. |
 

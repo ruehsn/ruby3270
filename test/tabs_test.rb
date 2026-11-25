@@ -274,6 +274,16 @@ class InstanceTest < Minitest::Test
     assert_nil I.parse(line, "t") # not an open request
   end
 
+  def test_other_choice_label
+    ui = ->(other) { I.parse_ui(JSON.generate("token" => "t", "ui" => { "kind" => "choose", "other" => other }), "t") }
+    assert_equal "Other:", ui.(true)["other"]
+    assert_equal "LPAR:", ui.("  LPAR: ")["other"]
+    assert_equal 60, ui.("x" * 99)["other"].size
+    refute ui.(false).key?("other")
+    refute ui.(" ").key?("other")
+    refute ui.(5).key?("other")
+  end
+
   def test_session_asks_through_the_window_and_can_be_stopped
     s = Tn3270::Session.new(engine: Object.new)
     s.window_port = 3272
@@ -290,6 +300,14 @@ class InstanceTest < Minitest::Test
       assert_equal 3272, sent["port"]
       answer = { "value" => "OTHER" }
       assert_nil s.choose("Which system?", %w[PROD TEST]) # only a listed option comes back
+      answer = { "value" => "OTHER", "other" => true }
+      assert_nil s.choose("Which system?", %w[PROD TEST]) # ...unless Other was offered
+      answer = { "value" => "  DEV ", "other" => true }
+      assert_equal "DEV", s.choose("Which system?", %w[PROD TEST], other: true)
+      assert_equal true, sent["other"]
+      answer = { "value" => "  ", "other" => true }
+      assert_nil s.choose("Which system?", %w[PROD TEST], other: "LPAR:")
+      assert_equal "LPAR:", sent["other"]
       answer = { "cancel" => true }
       assert_nil s.ask("Job name?")
       answer = { "stop" => true }

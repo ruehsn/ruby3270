@@ -40,10 +40,12 @@ unless s.on_screen?("OPTION ===>")
   exit
 end
 options = { "Key tester" => "1", "Color chart" => "2", "Wide screen" => "3" }
-pick = s.choose("Which screen should I open?", options.keys, default: "Color chart", title: "Menu")
+# other: adds a choice with a text box, here for typing a menu number yourself.
+pick = s.choose("Which screen should I open?", options.keys, default: "Color chart", title: "Menu",
+                other: "Option number:")
 exit unless pick # Cancel
 
-s.submit("OPTION", options[pick])
+s.submit("OPTION", options.fetch(pick, pick)) # a listed screen, or the number typed under Other
 s.notify("Opened #{pick}")
 
 # ---- text in a window of its own -------------------------------------------------------

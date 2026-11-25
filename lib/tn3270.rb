@@ -6,5 +6,5 @@ require_relative "tn3270/session"
 require_relative "tn3270/snippet"
 
 module Tn3270
-  VERSION = "0.1.4"
+  VERSION = "0.1.5"
 end
